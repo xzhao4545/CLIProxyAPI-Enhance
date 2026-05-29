@@ -37,7 +37,7 @@ import (
 )
 
 var (
-	Version           = "dev"
+	Version           = "0.1.1"
 	Commit            = "none"
 	BuildDate         = "unknown"
 	DefaultConfigPath = ""
