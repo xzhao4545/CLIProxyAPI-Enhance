@@ -41,6 +41,10 @@ Metrics include:
 
 Failure rows group by failure dimensions such as error stage, error code, provider, and model. Raw provider error payloads are not returned by default. `include_error_raw=true` is required on event queries and the stored value is size-limited and sanitized.
 
+Stream wrappers can mark a request-scoped failure override after an upstream stream has started. The usage manager applies that override before publishing or persisting the record, so late stream failures are stored with `status=failure` and their failure code/message. Keyword filter matches use this path with `error_stage=stream`, `error_code=keyword_filtered`, and an error message containing the matched keyword plus bounded response context.
+
 ## Provider Display Names
 
 Usage records use stable provider keys for filtering and human-readable provider labels for display. Built-in provider configs and OpenAI-compatible provider configs support optional labels. A `usage.provider-labels` map can override labels for providers that do not expose credential-specific names.
+
+Filter option responses include provider keys, display labels, auth IDs, and auth positions where available so the management panel can filter by either stable provider identity or user-facing label.

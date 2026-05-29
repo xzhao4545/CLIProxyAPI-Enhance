@@ -33,7 +33,7 @@ The updater resolves GitHub repository URLs to the latest release API endpoint, 
 
 `GET /management` redirects to `/management.html`.
 
-Root `/` returns JSON discovery unless `usage.management-panel.root-redirect` is enabled and the request accepts HTML.
+Root `/` returns JSON discovery unless `usage.management-panel.root-redirect` is enabled and the request accepts HTML. Root redirect is disabled when home mode is enabled or the control panel is disabled. Requests that explicitly accept `application/json` keep the JSON discovery response.
 
 ## Debug Test
 

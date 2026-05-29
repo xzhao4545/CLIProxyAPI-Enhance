@@ -41,6 +41,8 @@ usage:
 
 Relative SQLite paths resolve next to the active config file. `:memory:` and absolute paths are passed through.
 
+`sqlite-path` defaults to `usage.sqlite3` when empty. `max-provider-error-bytes` defaults to `8192` when unset or non-positive. Provider label override keys are normalized to lower-case provider keys and empty labels are ignored.
+
 ## Keyword Filters
 
 `keyword-filters` defines response-content rules used by the auth conductor to classify matching upstream responses as retryable provider failures:
@@ -54,6 +56,8 @@ keyword-filters:
 ```
 
 Supported `match-mode` values are `anywhere`, `start`, `end`, and `exact`. Empty match mode defaults to `anywhere` in management API writes and runtime matching.
+
+Rules are evaluated in configured order. Disabled rules and rules with an empty keyword are skipped. Runtime matching snapshots the rule list for each stream attempt so hot reloads apply to new attempts without changing an in-flight attempt.
 
 ## Payload Rules
 

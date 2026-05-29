@@ -67,6 +67,8 @@ DELETE /v0/management/keyword-filters?index=<n>
 
 `DELETE` removes one rule by index.
 
+All keyword filter writes use the normal config persistence path. `PUT` accepts an empty rule list, and `PATCH` requires both `index` and `rule`. Empty `match-mode` values are stored as `anywhere`.
+
 ## Persistent Usage Routes
 
 When a usage query service is registered, routes are exposed under both `/usage` and `/api/usage` inside the management group:
@@ -109,6 +111,8 @@ order
 `events` accepts `include_error_raw=true` to include sanitized raw provider errors. Raw provider error payloads are omitted by default.
 
 `summary` accepts `group_by=day|provider|model|provider_model|status`.
+
+`filters` returns provider options with keys, display labels, auth IDs, and auth positions when available. `metrics` returns request, token, RPM, TPM, provider, and model aggregates for the selected window.
 
 ## Management Panel Routes
 
