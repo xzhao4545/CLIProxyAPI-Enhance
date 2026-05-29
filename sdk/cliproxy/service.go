@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	forkusage "github.com/router-for-me/CLIProxyAPI/v7/internal/fork/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -98,6 +99,8 @@ type Service struct {
 
 	homeClient *home.Client
 	homeCancel context.CancelFunc
+
+	usageRecorder *forkusage.Recorder
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -548,6 +551,11 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 
 	s.applyRetryConfig(newCfg)
 	s.applyPprofConfig(newCfg)
+	if s.usageRecorder != nil {
+		if err := s.usageRecorder.UpdateConfig(context.Background(), forkusage.FromAppConfig(newCfg), s.configPath); err != nil {
+			log.Warnf("failed to update usage sqlite recorder: %v", err)
+		}
+	}
 	if s.server != nil {
 		s.server.UpdateClients(newCfg)
 	}
@@ -759,6 +767,15 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	usage.StartDefault(ctx)
+	if s.usageRecorder == nil {
+		recorder, errUsage := forkusage.NewRecorderFromConfig(ctx, forkusage.FromAppConfig(s.cfg), s.configPath)
+		if errUsage != nil {
+			log.Warnf("failed to initialize usage sqlite recorder: %v", errUsage)
+		} else {
+			s.usageRecorder = recorder
+			usage.RegisterPlugin(recorder)
+		}
+	}
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
@@ -808,7 +825,11 @@ func (s *Service) Run(ctx context.Context) error {
 	// legacy clients removed; no caches to refresh
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
-	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	serverOptions := append([]api.ServerOption(nil), s.serverOptions...)
+	if s.usageRecorder != nil {
+		serverOptions = append(serverOptions, api.WithUsageQueryService(s.usageRecorder))
+	}
+	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, serverOptions...)
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
@@ -1021,6 +1042,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
+		if s.usageRecorder != nil {
+			if err := s.usageRecorder.Close(); err != nil {
+				log.Errorf("failed to close usage sqlite recorder: %v", err)
+				if shutdownErr == nil {
+					shutdownErr = err
+				}
+			}
+			s.usageRecorder = nil
+		}
 	})
 	return shutdownErr
 }

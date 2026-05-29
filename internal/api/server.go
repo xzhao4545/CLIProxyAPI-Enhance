@@ -30,6 +30,7 @@ import (
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	forkusage "github.com/router-for-me/CLIProxyAPI/v7/internal/fork/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
@@ -59,6 +60,7 @@ type serverOptionConfig struct {
 	keepAliveTimeout     time.Duration
 	keepAliveOnTimeout   func()
 	postAuthHook         auth.PostAuthHook
+	usageQueryService    forkusage.QueryService
 }
 
 // ServerOption customises HTTP server construction.
@@ -126,6 +128,13 @@ func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
 	}
 }
 
+// WithUsageQueryService registers a fork-owned usage statistics query service.
+func WithUsageQueryService(service forkusage.QueryService) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.usageQueryService = service
+	}
+}
+
 // Server represents the main API server.
 // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
 type Server struct {
@@ -171,7 +180,8 @@ type Server struct {
 	wsAuthEnabled atomic.Bool
 
 	// management handler
-	mgmt *managementHandlers.Handler
+	mgmt         *managementHandlers.Handler
+	usageHandler *forkusage.Handler
 
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
@@ -279,6 +289,18 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	if optionState.usageQueryService != nil {
+		s.usageHandler = forkusage.NewHandler(optionState.usageQueryService)
+		if authManager != nil {
+			s.usageHandler.SetPositionFunc(func(authID string) string {
+				auth, ok := authManager.GetByID(authID)
+				if ok && auth != nil && auth.Attributes != nil {
+					return auth.Attributes["position"]
+				}
+				return ""
+			})
+		}
+	}
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
@@ -372,6 +394,9 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/management", func(c *gin.Context) {
+		c.Redirect(http.StatusFound, "/management.html")
+	})
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -419,6 +444,10 @@ func (s *Server) setupRoutes() {
 
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
+		if s.shouldRedirectRootToManagement(c) {
+			c.Redirect(http.StatusFound, "/management.html")
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"message": "CLI Proxy API Server",
 			"endpoints": []string{
@@ -602,6 +631,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
+		if s.usageHandler != nil {
+			s.usageHandler.Register(mgmt)
+		}
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
@@ -708,6 +740,23 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}
+}
+
+func (s *Server) shouldRedirectRootToManagement(c *gin.Context) bool {
+	if s == nil || s.cfg == nil || c == nil || c.Request == nil {
+		return false
+	}
+	if !s.cfg.Usage.ManagementPanel.RootRedirect {
+		return false
+	}
+	if s.cfg.Home.Enabled || s.cfg.RemoteManagement.DisableControlPanel {
+		return false
+	}
+	accept := c.GetHeader("Accept")
+	if strings.Contains(accept, "application/json") {
+		return false
+	}
+	return strings.Contains(accept, "text/html")
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {

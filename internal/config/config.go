@@ -74,6 +74,9 @@ type Config struct {
 	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
+	// Usage controls fork-owned persistent usage statistics.
+	Usage UsageConfig `yaml:"usage" json:"usage"`
+
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
@@ -206,6 +209,20 @@ type RemoteManagement struct {
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
 }
 
+// UsageConfig controls fork-owned persistent usage statistics and query APIs.
+type UsageConfig struct {
+	Enabled               bool              `yaml:"enabled" json:"enabled"`
+	SQLitePath            string            `yaml:"sqlite-path" json:"sqlite-path"`
+	ProviderLabels        map[string]string `yaml:"provider-labels,omitempty" json:"provider-labels,omitempty"`
+	MaxProviderErrorBytes int               `yaml:"max-provider-error-bytes" json:"max-provider-error-bytes"`
+	ManagementPanel       UsagePanelConfig  `yaml:"management-panel,omitempty" json:"management-panel,omitempty"`
+}
+
+// UsagePanelConfig controls fork-owned management panel routing behavior.
+type UsagePanelConfig struct {
+	RootRedirect bool `yaml:"root-redirect,omitempty" json:"root-redirect,omitempty"`
+}
+
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
 // It provides configuration options for automatic failover mechanisms.
 type QuotaExceeded struct {
@@ -270,6 +287,9 @@ type AmpModelMapping struct {
 // AmpCode groups Amp CLI integration settings including upstream routing,
 // optional overrides, management route restrictions, and model fallback mappings.
 type AmpCode struct {
+	// Label is an optional human-readable name for this credential in usage reports.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
+
 	// UpstreamURL defines the upstream Amp control plane used for non-provider calls.
 	UpstreamURL string `yaml:"upstream-url" json:"upstream-url"`
 
@@ -384,6 +404,9 @@ type CloakConfig struct {
 // ClaudeKey represents the configuration for a Claude API key,
 // including the API key itself and an optional base URL for the API endpoint.
 type ClaudeKey struct {
+	// Label is an optional human-readable name for this credential in usage reports.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
+
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
@@ -440,6 +463,9 @@ func (m ClaudeModel) GetAlias() string { return m.Alias }
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
 type CodexKey struct {
+	// Label is an optional human-readable name for this credential in usage reports.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
+
 	// APIKey is the authentication key for accessing Codex API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
@@ -491,6 +517,9 @@ func (m CodexModel) GetAlias() string { return m.Alias }
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
 type GeminiKey struct {
+	// Label is an optional human-readable name for this credential in usage reports.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
+
 	// APIKey is the authentication key for accessing Gemini API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
@@ -540,6 +569,9 @@ func (m GeminiModel) GetAlias() string { return m.Alias }
 type OpenAICompatibility struct {
 	// Name is the identifier for this OpenAI compatibility configuration.
 	Name string `yaml:"name" json:"name"`
+
+	// Label is an optional human-readable name for this credential in usage reports.
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
 
 	// Priority controls selection preference when multiple providers or credentials match.
 	// Higher values are preferred; defaults to 0.
@@ -889,6 +921,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 	out := make([]OpenAICompatibility, 0, len(cfg.OpenAICompatibility))
 	for i := range cfg.OpenAICompatibility {
 		e := cfg.OpenAICompatibility[i]
+		e.Label = strings.TrimSpace(e.Label)
 		e.Name = strings.TrimSpace(e.Name)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
@@ -911,6 +944,7 @@ func (cfg *Config) SanitizeCodexKeys() {
 	out := make([]CodexKey, 0, len(cfg.CodexKey))
 	for i := range cfg.CodexKey {
 		e := cfg.CodexKey[i]
+		e.Label = strings.TrimSpace(e.Label)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
@@ -930,6 +964,7 @@ func (cfg *Config) SanitizeClaudeKeys() {
 	}
 	for i := range cfg.ClaudeKey {
 		entry := &cfg.ClaudeKey[i]
+		entry.Label = strings.TrimSpace(entry.Label)
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
@@ -947,6 +982,7 @@ func (cfg *Config) SanitizeGeminiKeys() {
 	out := cfg.GeminiKey[:0]
 	for i := range cfg.GeminiKey {
 		entry := cfg.GeminiKey[i]
+		entry.Label = strings.TrimSpace(entry.Label)
 		entry.APIKey = strings.TrimSpace(entry.APIKey)
 		if entry.APIKey == "" {
 			continue

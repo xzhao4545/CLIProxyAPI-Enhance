@@ -12,14 +12,16 @@ import (
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
-	Provider  string
-	Model     string
-	Alias     string
-	APIKey    string
-	AuthID    string
-	AuthIndex string
-	AuthType  string
-	Source    string
+	Provider      string
+	ProviderLabel string
+	Model         string
+	Alias         string
+	APIKey        string
+	AuthID        string
+	AuthLabel     string
+	AuthIndex     string
+	AuthType      string
+	Source        string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	RequestedAt     time.Time
@@ -35,6 +37,8 @@ type Record struct {
 // Failure holds HTTP failure metadata for an upstream request attempt.
 type Failure struct {
 	StatusCode int
+	Stage      string
+	Code       string
 	Body       string
 }
 
@@ -124,10 +128,11 @@ type Manager struct {
 	stopOnce sync.Once
 	cancel   context.CancelFunc
 
-	mu     sync.Mutex
-	cond   *sync.Cond
-	queue  []queueItem
-	closed bool
+	mu       sync.Mutex
+	cond     *sync.Cond
+	queue    []queueItem
+	capacity int
+	closed   bool
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
@@ -135,7 +140,10 @@ type Manager struct {
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	m := &Manager{}
+	if buffer <= 0 {
+		buffer = 1
+	}
+	m := &Manager{capacity: buffer}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -192,6 +200,11 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		return
+	}
+	if len(m.queue) >= m.capacity {
+		m.mu.Unlock()
+		log.Debug("usage: manager queue full; dropping usage record")
 		return
 	}
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})

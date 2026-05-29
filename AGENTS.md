@@ -3,7 +3,7 @@
 Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
 
 ## Repository
-- GitHub: https://github.com/router-for-me/CLIProxyAPI
+- GitHub: https://github.com/xzhao4545/CLIProxyAPI-Enhance
 
 ## Commands
 ```bash
@@ -42,7 +42,6 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 
 ## Code Conventions
 - Keep changes small and simple (KISS)
-- Comments in English only
 - If editing code that already contains non-English comments, translate them to English (don’t add new non-English comments)
 - For user-visible strings, keep the existing language used in that file/area
 - New Markdown docs should be in English unless the file is explicitly language-specific (e.g. `README_CN.md`)
@@ -56,3 +55,10 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Use logrus structured logging; avoid leaking secrets/tokens in logs
 - Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
 - Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+
+## 文档维护规则
+
+1. **完成任务后更新文档并提交git**，提交注释使用简短的中文介绍，前面加feat:/doc: 等标记类型。
+2. **需求记录** — 新功能需求与未完成事项统一添加到 [doc/todo](./doc/todo/index.md) 下的对应文件；完成后移动到 [doc/finished](./doc/finished/index.md) 并沉淀到 `doc/current`
+3. **当前文档优先** — 当前实现、架构、框架、协议、数据模型、验证与维护规则统一维护在 [doc/current](./doc/current/index.md)，`doc/current`下维护的文档内容应是项目当前状态，不需要记录旧状态等，不需要记录功能模块如何修改，文档内不要有类似"旧的...继续..."，"...已不再..."等相关字样，旧的文档内容应直接删除，直接写入最新的内容，描述项目当前状态。
+4. **文档设计** —  [doc/current](./doc/current/index.md)下的文档设计应遵从小文件、多索引的要求，目录下设计应按模块、框架划分，对于大文件，应主动切为目录，并在目录下再添加index.md索引文件。

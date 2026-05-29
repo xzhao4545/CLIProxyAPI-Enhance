@@ -57,8 +57,9 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
 		id, token := idGen.Next("gemini:apikey", key, base)
 		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:gemini[%s]", token),
-			"api_key": key,
+			"source":   fmt.Sprintf("config:gemini[%s]", token),
+			"api_key":  key,
+			"position": strconv.Itoa(i),
 		}
 		metadata := map[string]any{}
 		if entry.DisableCooling {
@@ -77,7 +78,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "gemini",
-			Label:      "gemini-apikey",
+			Label:      firstNonEmpty(entry.Label, "gemini-apikey"),
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
@@ -112,8 +113,9 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		base := strings.TrimSpace(ck.BaseURL)
 		id, token := idGen.Next("claude:apikey", key, base)
 		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:claude[%s]", token),
-			"api_key": key,
+			"source":   fmt.Sprintf("config:claude[%s]", token),
+			"api_key":  key,
+			"position": strconv.Itoa(i),
 		}
 		metadata := map[string]any{}
 		if ck.DisableCooling {
@@ -133,7 +135,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "claude",
-			Label:      "claude-apikey",
+			Label:      firstNonEmpty(ck.Label, "claude-apikey"),
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
@@ -167,8 +169,9 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 		prefix := strings.TrimSpace(ck.Prefix)
 		id, token := idGen.Next("codex:apikey", key, ck.BaseURL)
 		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:codex[%s]", token),
-			"api_key": key,
+			"source":   fmt.Sprintf("config:codex[%s]", token),
+			"api_key":  key,
+			"position": strconv.Itoa(i),
 		}
 		metadata := map[string]any{}
 		if ck.DisableCooling {
@@ -191,7 +194,7 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "codex",
-			Label:      "codex-apikey",
+			Label:      firstNonEmpty(ck.Label, "codex-apikey"),
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
@@ -242,6 +245,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"base_url":     base,
 				"compat_name":  compat.Name,
 				"provider_key": providerName,
+				"position":     strconv.Itoa(j),
 			}
 			metadata := map[string]any{}
 			if disableCooling {
@@ -284,6 +288,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"base_url":     base,
 				"compat_name":  compat.Name,
 				"provider_key": providerName,
+				"position":     "0",
 			}
 			metadata := map[string]any{}
 			if disableCooling {
@@ -337,6 +342,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			"source":       fmt.Sprintf("config:vertex-apikey[%s]", token),
 			"base_url":     base,
 			"provider_key": providerName,
+			"position":     strconv.Itoa(i),
 		}
 		if compat.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(compat.Priority)
@@ -351,7 +357,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   providerName,
-			Label:      "vertex-apikey",
+			Label:      firstNonEmpty(compat.Label, "vertex-apikey"),
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
@@ -363,4 +369,13 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		out = append(out, a)
 	}
 	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
