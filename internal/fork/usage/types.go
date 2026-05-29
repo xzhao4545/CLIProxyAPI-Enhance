@@ -142,15 +142,15 @@ type Metrics struct {
 }
 
 type ProviderMetric struct {
-	ProviderKey      string  `json:"provider_key"`
-	ProviderLabel    string  `json:"provider_label"`
-	AuthID           string  `json:"auth_id,omitempty"`
-	AuthPosition     string  `json:"auth_position,omitempty"`
-	Requests         int64   `json:"requests"`
-	Successful       int64   `json:"successful_requests"`
-	Failed           int64   `json:"failed_requests"`
-	Tokens           int64   `json:"tokens"`
-	SuccessRate      float64 `json:"success_rate"`
+	ProviderKey   string  `json:"provider_key"`
+	ProviderLabel string  `json:"provider_label"`
+	AuthID        string  `json:"auth_id,omitempty"`
+	AuthPosition  string  `json:"auth_position,omitempty"`
+	Requests      int64   `json:"requests"`
+	Successful    int64   `json:"successful_requests"`
+	Failed        int64   `json:"failed_requests"`
+	Tokens        int64   `json:"tokens"`
+	SuccessRate   float64 `json:"success_rate"`
 }
 
 type ModelMetric struct {

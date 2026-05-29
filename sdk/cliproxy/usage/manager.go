@@ -55,6 +55,13 @@ type Detail struct {
 
 type requestedModelAliasContextKey struct{}
 type reasoningEffortContextKey struct{}
+type failureOverrideContextKey struct{}
+
+type failureOverrideState struct {
+	mu      sync.RWMutex
+	failed  bool
+	failure Failure
+}
 
 // WithRequestedModelAlias stores the client-requested model name for usage sinks.
 func WithRequestedModelAlias(ctx context.Context, alias string) context.Context {
@@ -110,6 +117,73 @@ func ReasoningEffortFromContext(ctx context.Context) string {
 	default:
 		return ""
 	}
+}
+
+// WithFailureOverride installs a mutable request-scoped usage failure marker.
+// The marker lets late stream wrappers classify an already-started provider
+// attempt as failed without coupling every executor to wrapper-level checks.
+func WithFailureOverride(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if failureOverrideFromContext(ctx) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, failureOverrideContextKey{}, &failureOverrideState{})
+}
+
+// MarkFailureOverride marks the request-scoped usage record as failed.
+func MarkFailureOverride(ctx context.Context, failure Failure) {
+	state := failureOverrideFromContext(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.failed = true
+	state.failure = failure
+	state.mu.Unlock()
+}
+
+// ApplyFailureOverride returns a record adjusted by any request-scoped failure marker.
+func ApplyFailureOverride(ctx context.Context, record Record) Record {
+	state := failureOverrideFromContext(ctx)
+	if state == nil {
+		return record
+	}
+	state.mu.RLock()
+	failed := state.failed
+	failure := state.failure
+	state.mu.RUnlock()
+	if !failed {
+		return record
+	}
+	record.Failed = true
+	record.Fail = mergeFailureOverride(record.Fail, failure)
+	return record
+}
+
+func failureOverrideFromContext(ctx context.Context) *failureOverrideState {
+	if ctx == nil {
+		return nil
+	}
+	state, _ := ctx.Value(failureOverrideContextKey{}).(*failureOverrideState)
+	return state
+}
+
+func mergeFailureOverride(current, override Failure) Failure {
+	if override.StatusCode > 0 {
+		current.StatusCode = override.StatusCode
+	}
+	if strings.TrimSpace(override.Stage) != "" {
+		current.Stage = override.Stage
+	}
+	if strings.TrimSpace(override.Code) != "" {
+		current.Code = override.Code
+	}
+	if strings.TrimSpace(override.Body) != "" {
+		current.Body = override.Body
+	}
+	return current
 }
 
 // Plugin consumes usage records emitted by the proxy runtime.
@@ -195,6 +269,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m == nil {
 		return
 	}
+	record = ApplyFailureOverride(ctx, record)
 	// ensure worker is running even if Start was not called explicitly
 	m.Start(context.Background())
 	m.mu.Lock()
@@ -230,6 +305,7 @@ func (m *Manager) run(ctx context.Context) {
 }
 
 func (m *Manager) dispatch(item queueItem) {
+	item.record = ApplyFailureOverride(item.ctx, item.record)
 	m.pluginsMu.RLock()
 	plugins := make([]Plugin, len(m.plugins))
 	copy(plugins, m.plugins)

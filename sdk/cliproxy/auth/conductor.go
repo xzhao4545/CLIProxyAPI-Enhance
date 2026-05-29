@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fork/keywordfilter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -815,13 +816,23 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 	}
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk) *cliproxyexecutor.StreamResult {
+func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, keywordRules []internalconfig.KeywordFilterRule) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
 		var failed bool
 		forward := true
-		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
+		emit := func(chunk cliproxyexecutor.StreamChunk, checkKeyword bool) bool {
+			if checkKeyword && chunk.Err == nil && len(chunk.Payload) > 0 && !failed && len(keywordRules) > 0 {
+				if match := keywordfilter.CheckPayload(chunk.Payload, keywordRules); match != nil {
+					message := keywordfilter.ErrorMessage(match)
+					markKeywordFilterUsageFailure(ctx, message)
+					chunk = cliproxyexecutor.StreamChunk{
+						Payload: chunk.Payload,
+						Err:     errors.New(message),
+					}
+				}
+			}
 			if chunk.Err != nil && !failed {
 				failed = true
 				rerr := &Error{Message: chunk.Err.Error()}
@@ -846,13 +857,13 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			}
 		}
 		for _, chunk := range buffered {
-			if ok := emit(chunk); !ok {
+			if ok := emit(chunk, false); !ok {
 				discardStreamChunks(remaining)
 				return
 			}
 		}
 		for chunk := range remaining {
-			if ok := emit(chunk); !ok {
+			if ok := emit(chunk, true); !ok {
 				discardStreamChunks(remaining)
 				return
 			}
@@ -864,6 +875,51 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
 }
 
+// checkKeywordFilter checks buffered stream chunks against keyword filter rules.
+// Returns an Error if a keyword match is found, nil otherwise.
+func checkKeywordFilter(ctx context.Context, buffered []cliproxyexecutor.StreamChunk, rules []internalconfig.KeywordFilterRule) *Error {
+	if len(rules) == 0 {
+		return nil
+	}
+	for _, chunk := range buffered {
+		if len(chunk.Payload) == 0 {
+			continue
+		}
+		if match := keywordfilter.CheckPayload(chunk.Payload, rules); match != nil {
+			message := keywordfilter.ErrorMessage(match)
+			markKeywordFilterUsageFailure(ctx, message)
+			return &Error{
+				Code:      "keyword_filtered",
+				Message:   message,
+				Retryable: true,
+			}
+		}
+	}
+	return nil
+}
+
+func markKeywordFilterUsageFailure(ctx context.Context, message string) {
+	if message == "" {
+		return
+	}
+	coreusage.MarkFailureOverride(ctx, coreusage.Failure{
+		Stage: "stream",
+		Code:  "keyword_filtered",
+		Body:  message,
+	})
+}
+
+func (m *Manager) keywordFilterRulesSnapshot() []internalconfig.KeywordFilterRule {
+	if m == nil {
+		return nil
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil || len(cfg.KeywordFilters) == 0 {
+		return nil
+	}
+	return append([]internalconfig.KeywordFilterRule(nil), cfg.KeywordFilters...)
+}
+
 func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, execModels []string, pooled bool) (*cliproxyexecutor.StreamResult, error) {
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
@@ -871,12 +927,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	ctx = contextWithRequestedModelAlias(ctx, opts, routeModel)
 	var lastErr error
 	for idx, execModel := range execModels {
+		execCtx := coreusage.WithFailureOverride(ctx)
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
 		execReq.Model = execModel
-		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, opts)
+		streamResult, errStream := executor.ExecuteStream(execCtx, auth, execReq, opts)
 		if errStream != nil {
-			if errCtx := ctx.Err(); errCtx != nil {
+			if errCtx := execCtx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
 			rerr := &Error{Message: errStream.Error()}
@@ -885,7 +942,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
-			m.MarkResult(ctx, result)
+			m.MarkResult(execCtx, result)
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
@@ -893,9 +950,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			continue
 		}
 
-		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
+		buffered, closed, bootstrapErr := readStreamBootstrap(execCtx, streamResult.Chunks)
 		if bootstrapErr != nil {
-			if errCtx := ctx.Err(); errCtx != nil {
+			if errCtx := execCtx.Err(); errCtx != nil {
 				discardStreamChunks(streamResult.Chunks)
 				return nil, errCtx
 			}
@@ -906,7 +963,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
-				m.MarkResult(ctx, result)
+				m.MarkResult(execCtx, result)
 				discardStreamChunks(streamResult.Chunks)
 				return nil, bootstrapErr
 			}
@@ -917,7 +974,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
-				m.MarkResult(ctx, result)
+				m.MarkResult(execCtx, result)
 				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
 				continue
@@ -928,7 +985,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
-			m.MarkResult(ctx, result)
+			m.MarkResult(execCtx, result)
 			discardStreamChunks(streamResult.Chunks)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}
@@ -936,12 +993,27 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if closed && len(buffered) == 0 {
 			emptyErr := &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr}
-			m.MarkResult(ctx, result)
+			m.MarkResult(execCtx, result)
 			if idx < len(execModels)-1 {
 				lastErr = emptyErr
 				continue
 			}
 			return nil, newStreamBootstrapError(emptyErr, streamResult.Headers)
+		}
+
+		keywordRules := m.keywordFilterRulesSnapshot()
+
+		// Check first buffered chunk payload against keyword filter rules.
+		// If matched, treat it as a bootstrap error and try the next model/auth.
+		if kwErr := checkKeywordFilter(execCtx, buffered, keywordRules); kwErr != nil {
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: kwErr}
+			m.MarkResult(execCtx, result)
+			discardStreamChunks(streamResult.Chunks)
+			if idx < len(execModels)-1 {
+				lastErr = errors.New(kwErr.Message)
+				continue
+			}
+			return nil, newStreamBootstrapError(errors.New(kwErr.Message), streamResult.Headers)
 		}
 
 		remaining := streamResult.Chunks
@@ -950,7 +1022,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			close(closedCh)
 			remaining = closedCh
 		}
-		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining), nil
+		return m.wrapStreamResult(execCtx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, keywordRules), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}

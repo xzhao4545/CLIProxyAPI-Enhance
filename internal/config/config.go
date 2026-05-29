@@ -149,7 +149,32 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// KeywordFilters defines rules for detecting unwanted response content.
+	// When a response chunk's text matches a keyword, the request is marked as failed
+	// and the provider is suspended for load balancing.
+	KeywordFilters []KeywordFilterRule `yaml:"keyword-filters" json:"keyword-filters"`
+
 	legacyMigrationPending bool `yaml:"-" json:"-"`
+}
+
+// KeywordFilterRule defines a single keyword matching rule for response content filtering.
+type KeywordFilterRule struct {
+	// Keyword is the text to match against response text.
+	Keyword string `yaml:"keyword" json:"keyword"`
+
+	// MatchMode controls how the keyword is matched:
+	//   "anywhere"  – keyword appears anywhere in the response text (default)
+	//   "start"     – response text starts with the keyword
+	//   "end"       – response text ends with the keyword
+	//   "exact"     – response text exactly equals the keyword
+	MatchMode string `yaml:"match-mode" json:"match-mode"`
+
+	// Enabled controls whether this rule is active.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// CaseSensitive controls whether keyword matching is case-sensitive.
+	// Defaults to false (case-insensitive).
+	CaseSensitive bool `yaml:"case-sensitive,omitempty" json:"case-sensitive,omitempty"`
 }
 
 // ClaudeHeaderDefaults configures default header values injected into Claude API requests.

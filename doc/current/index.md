@@ -24,7 +24,6 @@ Primary runtime surfaces:
 - [Keyword Filters](features/keyword-filters.md)
 - [Usage Statistics](features/usage-statistics.md)
 - [Management Panel](operations/management-panel.md)
-- [Workspace Status](workspace-status.md)
 
 ## Validation Commands
 

@@ -19,7 +19,7 @@ Fields:
 - `keyword`: text to match.
 - `match-mode`: `anywhere`, `start`, `end`, or `exact`; empty values behave as `anywhere`.
 - `enabled`: inactive rules are skipped.
-- `case-sensitive`: when false, matching lowercases both text and keyword.
+- `case-sensitive`: when false, matching uses case-insensitive text comparison.
 
 ## Payload Extraction
 
@@ -31,14 +31,16 @@ Fields:
 - Claude-style `content_block_delta` and `content_block_start`
 - Gemini-style `candidates[].content.parts[].text`
 
-If a JSON payload does not expose known text fields, or the chunk is not JSON, the raw chunk bytes are treated as text.
+If a JSON payload does not expose known text fields, or the chunk is not JSON, the raw chunk bytes are treated as text. Each payload is parsed once per check, then the extracted text is evaluated against the active rules in configured order.
 
 ## Runtime Behavior
 
-The SDK auth conductor checks keyword filters in two places:
+The SDK auth conductor snapshots the active keyword filter rules once per stream attempt and checks them in two places:
 
 - buffered bootstrap chunks before a stream is handed to callers
 - forwarded stream chunks before they leave the wrapped stream result
+
+Buffered chunks that pass the bootstrap check are forwarded without a second keyword scan. Later chunks continue to be scanned as they are forwarded.
 
 On match, the conductor produces the error message:
 
@@ -46,7 +48,7 @@ On match, the conductor produces the error message:
 keyword filter matched: response contains "<matched text>" (keyword: "<keyword>")
 ```
 
-Bootstrap matches are marked with code `keyword_filtered`, `Retryable: true`, and recorded as failed provider results. If more candidate models or credentials are available, the conductor can continue to the next candidate.
+The matched text is the original response text or a bounded excerpt around the matched keyword for large chunks. Bootstrap matches are marked with code `keyword_filtered`, `Retryable: true`, and recorded as failed provider results. If more candidate models or credentials are available, the conductor can continue to the next candidate. Stream-time matches are also recorded as failed usage with the `keyword_filtered` code and the same message body.
 
 ## Management
 

@@ -711,6 +711,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/vertex-api-key", s.mgmt.PatchVertexCompatKey)
 		mgmt.DELETE("/vertex-api-key", s.mgmt.DeleteVertexCompatKey)
 
+		mgmt.GET("/keyword-filters", s.mgmt.GetKeywordFilters)
+		mgmt.PUT("/keyword-filters", s.mgmt.PutKeywordFilters)
+		mgmt.PATCH("/keyword-filters", s.mgmt.PatchKeywordFilter)
+		mgmt.DELETE("/keyword-filters", s.mgmt.DeleteKeywordFilter)
+
 		mgmt.GET("/oauth-excluded-models", s.mgmt.GetOAuthExcludedModels)
 		mgmt.PUT("/oauth-excluded-models", s.mgmt.PutOAuthExcludedModels)
 		mgmt.PATCH("/oauth-excluded-models", s.mgmt.PatchOAuthExcludedModels)
