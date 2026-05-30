@@ -46,3 +46,41 @@ func TestBuildOpenAIResponsesStreamErrorChunkExtractsHTTPErrorBody(t *testing.T)
 		t.Fatalf("message = %v, want %q", payload["message"], "oops")
 	}
 }
+
+func TestBuildOpenAIResponsesStreamFailedChunk(t *testing.T) {
+	chunk := BuildOpenAIResponsesStreamFailedChunk(
+		http.StatusTooManyRequests,
+		`{"error":{"message":"keyword filter matched","type":"rate_limit_error","code":"keyword_filtered"}}`,
+		3,
+	)
+	var payload struct {
+		Type           string `json:"type"`
+		SequenceNumber int    `json:"sequence_number"`
+		Response       struct {
+			Object string `json:"object"`
+			Status string `json:"status"`
+			Error  struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(chunk, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Type != "response.failed" {
+		t.Fatalf("type = %q, want response.failed", payload.Type)
+	}
+	if payload.SequenceNumber != 3 {
+		t.Fatalf("sequence_number = %d, want 3", payload.SequenceNumber)
+	}
+	if payload.Response.Object != "response" || payload.Response.Status != "failed" {
+		t.Fatalf("response = object %q status %q, want response failed", payload.Response.Object, payload.Response.Status)
+	}
+	if payload.Response.Error.Code != "keyword_filtered" {
+		t.Fatalf("error code = %q, want keyword_filtered", payload.Response.Error.Code)
+	}
+	if payload.Response.Error.Message != "keyword filter matched" {
+		t.Fatalf("error message = %q, want keyword filter matched", payload.Response.Error.Message)
+	}
+}

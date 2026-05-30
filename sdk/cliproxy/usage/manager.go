@@ -58,10 +58,11 @@ type reasoningEffortContextKey struct{}
 type failureOverrideContextKey struct{}
 
 type failureOverrideState struct {
-	mu      sync.RWMutex
-	failed  bool
-	failure Failure
-	records []failureOverrideRecord
+	mu       sync.RWMutex
+	failed   bool
+	failure  Failure
+	fallback *Record
+	records  []failureOverrideRecord
 }
 
 type failureOverrideRecord struct {
@@ -150,6 +151,21 @@ func MarkFailureOverride(ctx context.Context, failure Failure) {
 	state.mu.Unlock()
 }
 
+// SetFailureOverrideFallback stores a request-scoped fallback usage record.
+// It is published only when a failure override is marked and no upstream usage
+// record was captured before the stream ended.
+func SetFailureOverrideFallback(ctx context.Context, record Record) {
+	state := failureOverrideFromContext(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	if state.fallback == nil {
+		state.fallback = &record
+	}
+	state.mu.Unlock()
+}
+
 // FlushFailureOverrideRecords publishes request-scoped usage records after the
 // final stream outcome is known, so late keyword-filter failures can reclassify
 // early token-usage records before plugins persist them.
@@ -160,7 +176,11 @@ func FlushFailureOverrideRecords(ctx context.Context) {
 	}
 	state.mu.Lock()
 	records := append([]failureOverrideRecord(nil), state.records...)
+	if len(records) == 0 && state.failed && state.fallback != nil {
+		records = append(records, failureOverrideRecord{manager: DefaultManager(), record: *state.fallback})
+	}
 	state.records = nil
+	state.fallback = nil
 	state.mu.Unlock()
 	for _, item := range records {
 		if item.manager == nil {

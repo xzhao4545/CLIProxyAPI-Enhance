@@ -15,7 +15,9 @@ import (
 
 type keywordFilterUsageExecutor struct {
 	publishBeforeKeyword bool
+	suppressUsage        bool
 	firstPayload         []byte
+	secondPayload        []byte
 }
 
 func (e *keywordFilterUsageExecutor) Identifier() string { return "kw" }
@@ -33,15 +35,19 @@ func (e *keywordFilterUsageExecutor) ExecuteStream(ctx context.Context, auth *Au
 			firstPayload = []byte(`data: {"choices":[{"delta":{"content":"hello"}}]}`)
 		}
 		chunks <- cliproxyexecutor.StreamChunk{Payload: firstPayload}
-		if e.publishBeforeKeyword {
+		if e.publishBeforeKeyword && !e.suppressUsage {
 			coreusage.PublishRecord(ctx, coreusage.Record{
 				Provider: "kw",
 				Model:    req.Model,
 				AuthID:   auth.ID,
 			})
 		}
-		chunks <- cliproxyexecutor.StreamChunk{Payload: []byte(`data: {"choices":[{"delta":{"content":"quota exhausted for this account"}}]}`)}
-		if !e.publishBeforeKeyword {
+		secondPayload := e.secondPayload
+		if len(secondPayload) == 0 {
+			secondPayload = []byte(`data: {"choices":[{"delta":{"content":"quota exhausted for this account"}}]}`)
+		}
+		chunks <- cliproxyexecutor.StreamChunk{Payload: secondPayload}
+		if !e.publishBeforeKeyword && !e.suppressUsage {
 			coreusage.PublishRecord(ctx, coreusage.Record{
 				Provider: "kw",
 				Model:    req.Model,
@@ -214,6 +220,126 @@ func TestKeywordFilterReclassifiesEarlyUsageRecordAsFailure(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for usage record")
+	}
+}
+
+func TestKeywordFilterCreatesFallbackUsageFailureWhenUpstreamHasNoUsage(t *testing.T) {
+	authID := "kw-auth-" + t.Name()
+	plugin := &captureUsagePlugin{authID: authID, records: make(chan coreusage.Record, 1)}
+	coreusage.RegisterPlugin(plugin)
+
+	m := NewManager(nil, nil, nil)
+	m.SetConfig(&internalconfig.Config{KeywordFilters: []internalconfig.KeywordFilterRule{{
+		Keyword: "quota exhausted",
+		Enabled: true,
+	}}})
+	m.RegisterExecutor(&keywordFilterUsageExecutor{suppressUsage: true})
+	auth := &Auth{ID: authID, Provider: "kw", Status: StatusActive, Label: "fallback auth"}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(authID, "kw", []*registry.ModelInfo{{ID: "kw-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+
+	streamResult, err := m.ExecuteStream(context.Background(), []string{"kw"}, cliproxyexecutor.Request{Model: "kw-model"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	first := <-streamResult.Chunks
+	if first.Err != nil {
+		t.Fatalf("first chunk error = %v", first.Err)
+	}
+	second := <-streamResult.Chunks
+	if second.Err == nil {
+		t.Fatal("expected keyword filter error")
+	}
+	assertKeywordFilterCooldown(t, m, authID, "kw-model")
+
+	select {
+	case record := <-plugin.records:
+		if !record.Failed {
+			t.Fatalf("fallback usage Failed = false, want true: %#v", record)
+		}
+		if record.Provider != "kw" || record.Model != "kw-model" || record.AuthID != authID {
+			t.Fatalf("fallback usage identity = provider %q model %q auth %q", record.Provider, record.Model, record.AuthID)
+		}
+		if record.Fail.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("fallback usage status = %d, want %d", record.Fail.StatusCode, http.StatusTooManyRequests)
+		}
+		if record.Fail.Code != "keyword_filtered" {
+			t.Fatalf("fallback usage failure code = %q, want keyword_filtered", record.Fail.Code)
+		}
+		if !strings.Contains(record.Fail.Body, "quota exhausted") || !strings.Contains(record.Fail.Body, "quota exhausted for this account") {
+			t.Fatalf("fallback usage body = %q, want keyword and matched text", record.Fail.Body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for fallback usage record")
+	}
+}
+
+func TestKeywordFilterCreatesFallbackUsageFailureForAnthropicStream(t *testing.T) {
+	authID := "kw-auth-" + t.Name()
+	plugin := &captureUsagePlugin{authID: authID, records: make(chan coreusage.Record, 1)}
+	coreusage.RegisterPlugin(plugin)
+
+	m := NewManager(nil, nil, nil)
+	m.SetConfig(&internalconfig.Config{KeywordFilters: []internalconfig.KeywordFilterRule{{
+		Keyword:   "quota exhausted",
+		MatchMode: "start",
+		Enabled:   true,
+	}}})
+	m.RegisterExecutor(&keywordFilterUsageExecutor{
+		suppressUsage: true,
+		firstPayload: []byte(`event: message_start
+data: {"type":"message_start","message":{"content":[]}}
+
+`),
+		secondPayload: []byte(`event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"quota exhausted for this account"}}
+
+`),
+	})
+	auth := &Auth{ID: authID, Provider: "kw", Status: StatusActive, Label: "anthropic fallback auth"}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(authID, "kw", []*registry.ModelInfo{{ID: "kw-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+
+	streamResult, err := m.ExecuteStream(context.Background(), []string{"kw"}, cliproxyexecutor.Request{Model: "kw-model"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	first := <-streamResult.Chunks
+	if first.Err != nil {
+		t.Fatalf("first chunk error = %v", first.Err)
+	}
+	second := <-streamResult.Chunks
+	if second.Err == nil {
+		t.Fatal("expected keyword filter error")
+	}
+	if got := second.Err.Error(); !strings.Contains(got, "quota exhausted") || !strings.Contains(got, "quota exhausted for this account") {
+		t.Fatalf("keyword error = %q, want keyword and matched text", got)
+	}
+	assertKeywordFilterCooldown(t, m, authID, "kw-model")
+
+	select {
+	case record := <-plugin.records:
+		if !record.Failed {
+			t.Fatalf("fallback usage Failed = false, want true: %#v", record)
+		}
+		if record.Fail.Code != "keyword_filtered" {
+			t.Fatalf("fallback usage failure code = %q, want keyword_filtered", record.Fail.Code)
+		}
+		if !strings.Contains(record.Fail.Body, "quota exhausted") || !strings.Contains(record.Fail.Body, "quota exhausted for this account") {
+			t.Fatalf("fallback usage body = %q, want keyword and matched text", record.Fail.Body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for fallback usage record")
 	}
 }
 

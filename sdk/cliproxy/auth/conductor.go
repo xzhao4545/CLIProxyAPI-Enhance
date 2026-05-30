@@ -830,7 +830,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			if checkKeyword && chunk.Err == nil && len(chunk.Payload) > 0 && !failed && len(keywordRules) > 0 {
 				if match := checker.CheckPayload(chunk.Payload); match != nil {
 					message := keywordfilter.ErrorMessage(match)
-					markKeywordFilterUsageFailure(ctx, message)
+					markKeywordFilterUsageFailure(ctx, auth, provider, resultModel, message)
 					kwErr := newKeywordFilterError(message)
 					chunk = cliproxyexecutor.StreamChunk{
 						Payload: chunk.Payload,
@@ -882,7 +882,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 
 // checkKeywordFilter checks buffered stream chunks against keyword filter rules.
 // Returns an Error if a keyword match is found, nil otherwise.
-func checkKeywordFilter(ctx context.Context, buffered []cliproxyexecutor.StreamChunk, rules []internalconfig.KeywordFilterRule) *Error {
+func checkKeywordFilter(ctx context.Context, buffered []cliproxyexecutor.StreamChunk, rules []internalconfig.KeywordFilterRule, auth *Auth, provider, model string) *Error {
 	if len(rules) == 0 {
 		return nil
 	}
@@ -893,7 +893,7 @@ func checkKeywordFilter(ctx context.Context, buffered []cliproxyexecutor.StreamC
 		}
 		if match := checker.CheckPayload(chunk.Payload); match != nil {
 			message := keywordfilter.ErrorMessage(match)
-			markKeywordFilterUsageFailure(ctx, message)
+			markKeywordFilterUsageFailure(ctx, auth, provider, model, message)
 			return newKeywordFilterError(message)
 		}
 	}
@@ -920,15 +920,50 @@ func errorForResult(err error) *Error {
 	return &Error{Message: err.Error()}
 }
 
-func markKeywordFilterUsageFailure(ctx context.Context, message string) {
+func markKeywordFilterUsageFailure(ctx context.Context, auth *Auth, provider, model, message string) {
 	if message == "" {
 		return
 	}
-	coreusage.MarkFailureOverride(ctx, coreusage.Failure{
-		Stage: "stream",
-		Code:  "keyword_filtered",
-		Body:  message,
-	})
+	failure := coreusage.Failure{
+		StatusCode: http.StatusTooManyRequests,
+		Stage:      "stream",
+		Code:       "keyword_filtered",
+		Body:       message,
+	}
+	coreusage.MarkFailureOverride(ctx, failure)
+	coreusage.SetFailureOverrideFallback(ctx, keywordFilterUsageFallbackRecord(ctx, auth, provider, model, failure))
+}
+
+func keywordFilterUsageFallbackRecord(ctx context.Context, auth *Auth, provider, model string, failure coreusage.Failure) coreusage.Record {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	alias := coreusage.RequestedModelAliasFromContext(ctx)
+	if strings.TrimSpace(alias) == "" {
+		alias = model
+	}
+	record := coreusage.Record{
+		Provider:        provider,
+		ProviderLabel:   provider,
+		Model:           model,
+		Alias:           alias,
+		ReasoningEffort: coreusage.ReasoningEffortFromContext(ctx),
+		RequestedAt:     time.Now(),
+		Failed:          true,
+		Fail:            failure,
+	}
+	if auth != nil {
+		if record.Provider == "" {
+			record.Provider = strings.TrimSpace(auth.Provider)
+		}
+		record.ProviderLabel = strings.TrimSpace(auth.Label)
+		record.AuthID = auth.ID
+		record.AuthLabel = strings.TrimSpace(auth.Label)
+		record.AuthIndex = auth.EnsureIndex()
+	}
+	if record.ProviderLabel == "" {
+		record.ProviderLabel = record.Provider
+	}
+	return record
 }
 
 func (m *Manager) keywordFilterRulesSnapshot() []internalconfig.KeywordFilterRule {
@@ -1033,7 +1068,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 
 		// Check first buffered chunk payload against keyword filter rules.
 		// If matched, treat it as a bootstrap error and try the next model/auth.
-		if kwErr := checkKeywordFilter(execCtx, buffered, keywordRules); kwErr != nil {
+		if kwErr := checkKeywordFilter(execCtx, buffered, keywordRules, auth, provider, resultModel); kwErr != nil {
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: kwErr}
 			m.MarkResult(execCtx, result)
 			discardStreamChunks(streamResult.Chunks)

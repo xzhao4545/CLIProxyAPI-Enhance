@@ -14,6 +14,27 @@ type openAIResponsesStreamErrorChunk struct {
 	SequenceNumber int    `json:"sequence_number"`
 }
 
+type openAIResponsesStreamFailedChunk struct {
+	Type           string                        `json:"type"`
+	SequenceNumber int                           `json:"sequence_number"`
+	Response       openAIResponsesFailedResponse `json:"response"`
+}
+
+type openAIResponsesFailedResponse struct {
+	ID        string                      `json:"id"`
+	Object    string                      `json:"object"`
+	CreatedAt int64                       `json:"created_at"`
+	Status    string                      `json:"status"`
+	Error     openAIResponsesFailureError `json:"error"`
+	Output    []any                       `json:"output"`
+	Usage     any                         `json:"usage"`
+}
+
+type openAIResponsesFailureError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 func openAIResponsesStreamErrorCode(status int) string {
 	switch status {
 	case http.StatusUnauthorized:
@@ -37,12 +58,7 @@ func openAIResponsesStreamErrorCode(status int) string {
 	}
 }
 
-// BuildOpenAIResponsesStreamErrorChunk builds an OpenAI Responses streaming error chunk.
-//
-// Important: OpenAI's HTTP error bodies are shaped like {"error":{...}}; those are valid for
-// non-streaming responses, but streaming clients validate SSE `data:` payloads against a union
-// of chunks that requires a top-level `type` field.
-func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNumber int) []byte {
+func openAIResponsesStreamErrorFields(status int, errText string, sequenceNumber int) (int, string, string, int) {
 	if status <= 0 {
 		status = http.StatusInternalServerError
 	}
@@ -94,6 +110,16 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 	if strings.TrimSpace(code) == "" {
 		code = "unknown_error"
 	}
+	return status, code, message, sequenceNumber
+}
+
+// BuildOpenAIResponsesStreamErrorChunk builds an OpenAI Responses streaming error chunk.
+//
+// Important: OpenAI's HTTP error bodies are shaped like {"error":{...}}; those are valid for
+// non-streaming responses, but streaming clients validate SSE `data:` payloads against a union
+// of chunks that requires a top-level `type` field.
+func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNumber int) []byte {
+	_, code, message, sequenceNumber := openAIResponsesStreamErrorFields(status, errText, sequenceNumber)
 
 	data, err := json.Marshal(openAIResponsesStreamErrorChunk{
 		Type:           "error",
@@ -116,4 +142,31 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 		return data
 	}
 	return []byte(`{"type":"error","code":"internal_server_error","message":"internal error","sequence_number":0}`)
+}
+
+// BuildOpenAIResponsesStreamFailedChunk builds a Responses-native failure event.
+// It complements the generic `error` event so clients that follow the Responses
+// lifecycle can surface a terminal model failure.
+func BuildOpenAIResponsesStreamFailedChunk(status int, errText string, sequenceNumber int) []byte {
+	_, code, message, sequenceNumber := openAIResponsesStreamErrorFields(status, errText, sequenceNumber)
+	data, err := json.Marshal(openAIResponsesStreamFailedChunk{
+		Type:           "response.failed",
+		SequenceNumber: sequenceNumber,
+		Response: openAIResponsesFailedResponse{
+			ID:        "",
+			Object:    "response",
+			CreatedAt: 0,
+			Status:    "failed",
+			Error: openAIResponsesFailureError{
+				Code:    code,
+				Message: message,
+			},
+			Output: []any{},
+			Usage:  nil,
+		},
+	})
+	if err == nil {
+		return data
+	}
+	return []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"failed","error":{"code":"internal_server_error","message":"internal error"},"output":[],"usage":null}}`)
 }

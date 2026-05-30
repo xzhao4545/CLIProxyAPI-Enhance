@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -23,13 +25,48 @@ type MatchResult struct {
 	Text      string
 }
 
+type observeRule struct {
+	Index         int    `json:"index"`
+	Keyword       string `json:"keyword"`
+	MatchMode     string `json:"match_mode"`
+	Enabled       bool   `json:"enabled"`
+	CaseSensitive bool   `json:"case_sensitive"`
+}
+
+type observeMatch struct {
+	RuleIndex int    `json:"rule_index"`
+	Keyword   string `json:"keyword"`
+	Text      string `json:"text"`
+}
+
+type observeEntry struct {
+	Time           string        `json:"time"`
+	Scope          string        `json:"scope"`
+	Matched        bool          `json:"matched"`
+	Match          *observeMatch `json:"match,omitempty"`
+	ExtractedTexts []string      `json:"extracted_texts,omitempty"`
+	StreamText     string        `json:"stream_text,omitempty"`
+	RawPayload     string        `json:"raw_payload,omitempty"`
+	Rules          []observeRule `json:"rules,omitempty"`
+}
+
 // CheckPayload checks a single chunk payload against all enabled keyword filter rules.
 // Returns nil if no rule matches.
 func CheckPayload(payload []byte, rules []config.KeywordFilterRule) *MatchResult {
 	if len(payload) == 0 || len(rules) == 0 {
 		return nil
 	}
-	return checkTexts(extractTexts(payload), rules)
+	texts := extractTexts(payload)
+	match := checkTexts(texts, rules)
+	writeObservation(observeEntry{
+		Scope:          "payload",
+		Matched:        match != nil,
+		Match:          observeMatchResult(match),
+		ExtractedTexts: boundStrings(texts),
+		RawPayload:     boundString(string(payload)),
+		Rules:          observeRules(rules),
+	})
+	return match
 }
 
 // CheckText checks already extracted response text against all enabled rules.
@@ -58,12 +95,30 @@ func (c *StreamChecker) CheckPayload(payload []byte) *MatchResult {
 	if c == nil || len(payload) == 0 || len(c.rules) == 0 {
 		return nil
 	}
-	for _, text := range extractTexts(payload) {
+	texts := extractTexts(payload)
+	for _, text := range texts {
 		c.appendText(text)
 		if match := CheckText(c.text, c.rules); match != nil {
+			writeObservation(observeEntry{
+				Scope:          "stream",
+				Matched:        true,
+				Match:          observeMatchResult(match),
+				ExtractedTexts: boundStrings(texts),
+				StreamText:     boundString(c.text),
+				RawPayload:     boundString(string(payload)),
+				Rules:          observeRules(c.rules),
+			})
 			return match
 		}
 	}
+	writeObservation(observeEntry{
+		Scope:          "stream",
+		Matched:        false,
+		ExtractedTexts: boundStrings(texts),
+		StreamText:     boundString(c.text),
+		RawPayload:     boundString(string(payload)),
+		Rules:          observeRules(c.rules),
+	})
 	return nil
 }
 
@@ -216,8 +271,11 @@ func keywordRuneIndex(text, keyword string, caseSensitive bool) int {
 
 func extractTexts(payload []byte) []string {
 	trimmed := bytes.TrimSpace(payload)
-	if texts := extractSSEDataTexts(trimmed); len(texts) > 0 {
+	if texts, ok := extractSSEDataTexts(trimmed); ok {
 		return texts
+	}
+	if isSSEControlPayload(trimmed) {
+		return nil
 	}
 	if !bytes.HasPrefix(trimmed, []byte{'{'}) {
 		return []string{string(payload)}
@@ -269,6 +327,16 @@ func extractTexts(payload []byte) []string {
 		var t string
 		if json.Unmarshal(msgType, &t) == nil {
 			switch t {
+			case "response.output_text.delta":
+				appendJSONStringRaw(&texts, raw["delta"])
+			case "response.output_text.done":
+				appendJSONStringRaw(&texts, raw["text"])
+			case "response.content_part.added", "response.content_part.done":
+				appendPartText(&texts, raw["part"])
+			case "response.output_item.added", "response.output_item.done":
+				appendItemContentTexts(&texts, raw["item"])
+			case "response.completed":
+				appendResponseOutputTexts(&texts, raw["response"])
 			case "content_block_delta":
 				if delta, ok := raw["delta"]; ok {
 					var d struct {
@@ -314,12 +382,110 @@ func extractTexts(payload []byte) []string {
 	}
 
 	if len(texts) == 0 {
+		if isOpenAIResponseEvent(raw) || isAnthropicStreamEvent(raw) {
+			return nil
+		}
 		return []string{string(payload)}
 	}
 	return texts
 }
 
-func extractSSEDataTexts(payload []byte) []string {
+func isOpenAIResponseEvent(raw map[string]json.RawMessage) bool {
+	msgType, ok := raw["type"]
+	if !ok {
+		return false
+	}
+	var t string
+	return json.Unmarshal(msgType, &t) == nil && strings.HasPrefix(t, "response.")
+}
+
+func isAnthropicStreamEvent(raw map[string]json.RawMessage) bool {
+	msgType, ok := raw["type"]
+	if !ok {
+		return false
+	}
+	var t string
+	if json.Unmarshal(msgType, &t) != nil {
+		return false
+	}
+	switch t {
+	case "message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendJSONStringRaw(texts *[]string, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil && s != "" {
+		*texts = append(*texts, s)
+	}
+}
+
+func appendPartText(texts *[]string, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var part struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &part) == nil && part.Text != "" {
+		*texts = append(*texts, part.Text)
+	}
+}
+
+func appendItemContentTexts(texts *[]string, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var item struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &item) != nil {
+		return
+	}
+	for _, content := range item.Content {
+		if content.Text != "" {
+			*texts = append(*texts, content.Text)
+		}
+	}
+}
+
+func appendResponseOutputTexts(texts *[]string, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var response struct {
+		Output []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if json.Unmarshal(raw, &response) != nil {
+		return
+	}
+	for _, output := range response.Output {
+		for _, content := range output.Content {
+			if content.Text != "" {
+				*texts = append(*texts, content.Text)
+			}
+		}
+	}
+}
+
+func extractSSEDataTexts(payload []byte) ([]string, bool) {
 	var texts []string
 	hasDataLine := false
 	for _, line := range bytes.Split(payload, []byte{'\n'}) {
@@ -338,12 +504,105 @@ func extractSSEDataTexts(payload []byte) []string {
 		texts = append(texts, extractTexts(data)...)
 	}
 	if !hasDataLine {
-		return nil
+		return nil, false
 	}
-	return texts
+	return texts, true
+}
+
+func isSSEControlPayload(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	hasControlLine := false
+	for _, line := range bytes.Split(payload, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || bytes.HasPrefix(line, []byte{':'}) {
+			continue
+		}
+		if bytes.HasPrefix(line, []byte("event:")) ||
+			bytes.HasPrefix(line, []byte("id:")) ||
+			bytes.HasPrefix(line, []byte("retry:")) {
+			hasControlLine = true
+			continue
+		}
+		return false
+	}
+	return hasControlLine
 }
 
 // ErrorMessage formats the error message returned when a keyword filter matches.
 func ErrorMessage(match *MatchResult) string {
 	return fmt.Sprintf("keyword filter matched: response contains %q (keyword: %q)", match.Text, match.Keyword)
+}
+
+func observeMatchResult(match *MatchResult) *observeMatch {
+	if match == nil {
+		return nil
+	}
+	return &observeMatch{
+		RuleIndex: match.RuleIndex,
+		Keyword:   match.Keyword,
+		Text:      boundString(match.Text),
+	}
+}
+
+func observeRules(rules []config.KeywordFilterRule) []observeRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]observeRule, 0, len(rules))
+	for i, rule := range rules {
+		out = append(out, observeRule{
+			Index:         i,
+			Keyword:       rule.Keyword,
+			MatchMode:     normalizedObserveMatchMode(rule.MatchMode),
+			Enabled:       rule.Enabled,
+			CaseSensitive: rule.CaseSensitive,
+		})
+	}
+	return out
+}
+
+func normalizedObserveMatchMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return "anywhere"
+	}
+	return mode
+}
+
+func boundStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, boundString(value))
+	}
+	return out
+}
+
+func boundString(value string) string {
+	const maxObserveRunes = 4096
+	if utf8.RuneCountInString(value) <= maxObserveRunes {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:maxObserveRunes]) + "..."
+}
+
+func writeObservation(entry observeEntry) {
+	entry.Time = time.Now().UTC().Format(time.RFC3339Nano)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile("keyword-filter-observe.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+	_, _ = f.Write(append(data, '\n'))
 }

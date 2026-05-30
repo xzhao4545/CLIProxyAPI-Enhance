@@ -1493,7 +1493,7 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 		`{"type":"response.create","previous_response_id":"resp-auth-a-1","input":[{"type":"message","id":"msg-2"}]}`,
 		`{"type":"response.create","previous_response_id":"resp-auth-a-1","input":[{"type":"message","id":"msg-3"}]}`,
 	}
-	wantTypes := []string{wsEventTypeCompleted, wsEventTypeError, wsEventTypeCompleted}
+	wantTypes := []string{wsEventTypeCompleted, "response.failed", wsEventTypeCompleted}
 	for i := range requests {
 		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(requests[i])); errWrite != nil {
 			t.Fatalf("write websocket message %d: %v", i+1, errWrite)
@@ -1505,8 +1505,20 @@ func TestResponsesWebsocketReleasesPinnedAuthAfterQuotaError(t *testing.T) {
 		if got := gjson.GetBytes(payload, "type").String(); got != wantTypes[i] {
 			t.Fatalf("message %d payload type = %s, want %s: %s", i+1, got, wantTypes[i], payload)
 		}
-		if i == 1 && int(gjson.GetBytes(payload, "status").Int()) != http.StatusTooManyRequests {
-			t.Fatalf("quota payload status = %d, want %d: %s", gjson.GetBytes(payload, "status").Int(), http.StatusTooManyRequests, payload)
+		if i == 1 {
+			if got := gjson.GetBytes(payload, "response.status").String(); got != "failed" {
+				t.Fatalf("failed payload response.status = %q, want failed: %s", got, payload)
+			}
+			_, payload, errReadMessage = conn.ReadMessage()
+			if errReadMessage != nil {
+				t.Fatalf("read websocket error payload: %v", errReadMessage)
+			}
+			if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeError {
+				t.Fatalf("error payload type = %s, want %s: %s", got, wsEventTypeError, payload)
+			}
+			if int(gjson.GetBytes(payload, "status").Int()) != http.StatusTooManyRequests {
+				t.Fatalf("quota payload status = %d, want %d: %s", gjson.GetBytes(payload, "status").Int(), http.StatusTooManyRequests, payload)
+			}
 		}
 	}
 

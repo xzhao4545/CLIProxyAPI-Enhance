@@ -1266,7 +1266,14 @@ func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog websocketT
 		}
 	}
 
-	return payload, writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now())
+	failedPayload := handlers.BuildOpenAIResponsesStreamFailedChunk(status, errText, 0)
+	if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, failedPayload, time.Now()); errWrite != nil {
+		return failedPayload, errWrite
+	}
+	if errWrite := writeResponsesWebsocketPayload(conn, wsTimelineLog, payload, time.Now()); errWrite != nil {
+		return payload, errWrite
+	}
+	return failedPayload, nil
 }
 
 func appendWebsocketEvent(builder *strings.Builder, eventType string, payload []byte) {

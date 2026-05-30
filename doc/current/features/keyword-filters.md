@@ -29,10 +29,11 @@ Fields:
 - OpenAI-style `choices[].delta.content`
 - OpenAI-style `choices[].message.content`
 - OpenAI-style `choices[].text`
+- OpenAI Responses / Codex events: `response.output_text.delta`, `response.output_text.done`, `response.content_part.*`, `response.output_item.*`, and `response.completed`
 - Claude-style `content_block_delta` and `content_block_start`
 - Gemini-style `candidates[].content.parts[].text`
 
-If a JSON payload does not expose known text fields, or the chunk is not JSON, the raw chunk bytes are treated as text. Each payload is parsed once per check, then the extracted text is evaluated against the active rules in configured order. Stream checks keep bounded extracted text context across chunks so `start`, `end`, and `exact` modes use response-text boundaries even when upstream splits a sentence across multiple SSE frames.
+SSE control-only frames such as `event:`, `id:`, and `retry:` are ignored. OpenAI Responses metadata events and Anthropic stream metadata events that do not expose response text are ignored. If another JSON payload does not expose known text fields, or the chunk is not JSON, the raw chunk bytes are treated as text. Each payload is parsed once per check, then the extracted text is evaluated against the active rules in configured order. Stream checks keep bounded extracted text context across chunks so `start`, `end`, and `exact` modes use response-text boundaries even when upstream splits a sentence across multiple SSE frames.
 
 ## Runtime Behavior
 
@@ -49,7 +50,9 @@ On match, the conductor produces the error message:
 keyword filter matched: response contains "<matched text>" (keyword: "<keyword>")
 ```
 
-The matched text is the original response text or a bounded excerpt around the matched keyword for large chunks. Matches are marked with code `keyword_filtered`, `Retryable: true`, and an internal HTTP status of `429`, so the current auth/model enters the existing quota cooldown path before fallback selection continues. If more candidate models or credentials are available, the conductor can continue to the next candidate. Stream-time matches are also recorded as failed usage with the `keyword_filtered` code and the same message body.
+The matched text is the original response text or a bounded excerpt around the matched keyword for large chunks. Matches are marked with code `keyword_filtered`, `Retryable: true`, and an internal HTTP status of `429`, so the current auth/model enters the existing quota cooldown path before fallback selection continues. If more candidate models or credentials are available, the conductor can continue to the next candidate. Stream-time matches are recorded as failed usage with the `keyword_filtered` code and the same message body. If the stream is filtered before the upstream emits token usage, the request still produces a zero-token failed usage record so management statistics show the failure.
+
+OpenAI Chat Completions streams return the normal OpenAI-compatible error body. OpenAI Responses streams and Codex websocket sessions emit a Responses-native `response.failed` event and keep the generic `error` event for compatibility. Claude-compatible streams emit a Claude SSE `event: error` response with the keyword filter message in the error body.
 
 ## Management
 

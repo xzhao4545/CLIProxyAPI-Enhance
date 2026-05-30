@@ -4,10 +4,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 )
 
@@ -90,5 +92,42 @@ func TestPendingClaudeStreamErrorUsesBufferedError(t *testing.T) {
 	}
 	if gotErr != wantErr {
 		t.Fatalf("pending error = %p, want %p", gotErr, wantErr)
+	}
+}
+
+func TestForwardClaudeStreamWritesKeywordFilterTerminalError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	handler := &ClaudeCodeAPIHandler{BaseAPIHandler: &handlers.BaseAPIHandler{}}
+
+	data := make(chan []byte)
+	close(data)
+	errs := make(chan *interfaces.ErrorMessage, 1)
+	errs <- &interfaces.ErrorMessage{
+		StatusCode: http.StatusTooManyRequests,
+		Error:      errors.New(`keyword filter matched: response contains "quota exhausted for this account" (keyword: "quota exhausted")`),
+	}
+	close(errs)
+
+	var cancelErr error
+	handler.forwardClaudeStream(c, recorder, func(err error) { cancelErr = err }, data, errs)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusTooManyRequests, body)
+	}
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("body = %q, want Claude stream error event", body)
+	}
+	if got := gjson.Get(strings.TrimPrefix(strings.TrimSpace(body), "event: error\ndata: "), "error.type").String(); got != "rate_limit_error" {
+		t.Fatalf("error.type = %q, want rate_limit_error; body=%s", got, body)
+	}
+	if !strings.Contains(body, "keyword filter matched") || !strings.Contains(body, "quota exhausted for this account") {
+		t.Fatalf("body = %q, want keyword filter message", body)
+	}
+	if cancelErr == nil || !strings.Contains(cancelErr.Error(), "keyword filter matched") {
+		t.Fatalf("cancelErr = %v, want keyword filter error", cancelErr)
 	}
 }
