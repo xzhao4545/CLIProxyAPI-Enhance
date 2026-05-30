@@ -49,7 +49,7 @@ On match, the conductor produces the error message:
 keyword filter matched: response contains "<matched text>" (keyword: "<keyword>")
 ```
 
-The matched text is the original response text or a bounded excerpt around the matched keyword for large chunks. Bootstrap matches are marked with code `keyword_filtered`, `Retryable: true`, and recorded as failed provider results. If more candidate models or credentials are available, the conductor can continue to the next candidate. Stream-time matches are also recorded as failed usage with the `keyword_filtered` code and the same message body.
+The matched text is the original response text or a bounded excerpt around the matched keyword for large chunks. Matches are marked with code `keyword_filtered`, `Retryable: true`, and an internal HTTP status of `429`, so the current auth/model enters the existing quota cooldown path before fallback selection continues. If more candidate models or credentials are available, the conductor can continue to the next candidate. Stream-time matches are also recorded as failed usage with the `keyword_filtered` code and the same message body.
 
 ## Management
 

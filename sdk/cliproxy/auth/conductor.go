@@ -831,15 +831,16 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				if match := checker.CheckPayload(chunk.Payload); match != nil {
 					message := keywordfilter.ErrorMessage(match)
 					markKeywordFilterUsageFailure(ctx, message)
+					kwErr := newKeywordFilterError(message)
 					chunk = cliproxyexecutor.StreamChunk{
 						Payload: chunk.Payload,
-						Err:     errors.New(message),
+						Err:     kwErr,
 					}
 				}
 			}
 			if chunk.Err != nil && !failed {
 				failed = true
-				rerr := &Error{Message: chunk.Err.Error()}
+				rerr := errorForResult(chunk.Err)
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
 				}
@@ -893,14 +894,30 @@ func checkKeywordFilter(ctx context.Context, buffered []cliproxyexecutor.StreamC
 		if match := checker.CheckPayload(chunk.Payload); match != nil {
 			message := keywordfilter.ErrorMessage(match)
 			markKeywordFilterUsageFailure(ctx, message)
-			return &Error{
-				Code:      "keyword_filtered",
-				Message:   message,
-				Retryable: true,
-			}
+			return newKeywordFilterError(message)
 		}
 	}
 	return nil
+}
+
+func newKeywordFilterError(message string) *Error {
+	return &Error{
+		Code:       "keyword_filtered",
+		Message:    message,
+		Retryable:  true,
+		HTTPStatus: http.StatusTooManyRequests,
+	}
+}
+
+func errorForResult(err error) *Error {
+	if err == nil {
+		return nil
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		return cloneError(authErr)
+	}
+	return &Error{Message: err.Error()}
 }
 
 func markKeywordFilterUsageFailure(ctx context.Context, message string) {
@@ -1022,10 +1039,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			discardStreamChunks(streamResult.Chunks)
 			coreusage.FlushFailureOverrideRecords(execCtx)
 			if idx < len(execModels)-1 {
-				lastErr = errors.New(kwErr.Message)
+				lastErr = kwErr
 				continue
 			}
-			return nil, newStreamBootstrapError(errors.New(kwErr.Message), streamResult.Headers)
+			return nil, newStreamBootstrapError(kwErr, streamResult.Headers)
 		}
 
 		remaining := streamResult.Chunks
