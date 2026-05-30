@@ -61,6 +61,12 @@ type failureOverrideState struct {
 	mu      sync.RWMutex
 	failed  bool
 	failure Failure
+	records []failureOverrideRecord
+}
+
+type failureOverrideRecord struct {
+	manager *Manager
+	record  Record
 }
 
 // WithRequestedModelAlias stores the client-requested model name for usage sinks.
@@ -142,6 +148,26 @@ func MarkFailureOverride(ctx context.Context, failure Failure) {
 	state.failed = true
 	state.failure = failure
 	state.mu.Unlock()
+}
+
+// FlushFailureOverrideRecords publishes request-scoped usage records after the
+// final stream outcome is known, so late keyword-filter failures can reclassify
+// early token-usage records before plugins persist them.
+func FlushFailureOverrideRecords(ctx context.Context) {
+	state := failureOverrideFromContext(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	records := append([]failureOverrideRecord(nil), state.records...)
+	state.records = nil
+	state.mu.Unlock()
+	for _, item := range records {
+		if item.manager == nil {
+			continue
+		}
+		item.manager.publishNow(ctx, item.record)
+	}
 }
 
 // ApplyFailureOverride returns a record adjusted by any request-scoped failure marker.
@@ -269,6 +295,16 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m == nil {
 		return
 	}
+	if state := failureOverrideFromContext(ctx); state != nil {
+		state.mu.Lock()
+		state.records = append(state.records, failureOverrideRecord{manager: m, record: record})
+		state.mu.Unlock()
+		return
+	}
+	m.publishNow(ctx, record)
+}
+
+func (m *Manager) publishNow(ctx context.Context, record Record) {
 	record = ApplyFailureOverride(ctx, record)
 	// ensure worker is running even if Start was not called explicitly
 	m.Start(context.Background())

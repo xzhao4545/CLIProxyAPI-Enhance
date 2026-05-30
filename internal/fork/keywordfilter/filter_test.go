@@ -52,3 +52,35 @@ func TestCheckPayloadCaseInsensitiveMatchKeepsOriginalText(t *testing.T) {
 		t.Fatalf("match text = %q, want original casing", match.Text)
 	}
 }
+
+func TestCheckPayloadStartModeExtractsSSEDataText(t *testing.T) {
+	match := CheckPayload([]byte(`data: {"choices":[{"delta":{"content":"quota exhausted for this account"}}]}`), []config.KeywordFilterRule{{
+		Keyword:   "quota exhausted",
+		MatchMode: "start",
+		Enabled:   true,
+	}})
+	if match == nil {
+		t.Fatal("CheckPayload() = nil, want start match inside SSE data payload")
+	}
+	if match.Text != "quota exhausted for this account" {
+		t.Fatalf("match text = %q, want extracted response text", match.Text)
+	}
+}
+
+func TestStreamCheckerStartModeMatchesSplitSSEText(t *testing.T) {
+	checker := NewStreamChecker([]config.KeywordFilterRule{{
+		Keyword:   "quota exhausted",
+		MatchMode: "start",
+		Enabled:   true,
+	}})
+	if match := checker.CheckPayload([]byte(`data: {"choices":[{"delta":{"content":"quota "}}]}`)); match != nil {
+		t.Fatalf("first partial match = %#v, want nil", match)
+	}
+	match := checker.CheckPayload([]byte(`data: {"choices":[{"delta":{"content":"exhausted for this account"}}]}`))
+	if match == nil {
+		t.Fatal("second partial match = nil, want split start match")
+	}
+	if !strings.Contains(match.Text, "quota exhausted for this account") {
+		t.Fatalf("match text = %q, want accumulated response text", match.Text)
+	}
+}

@@ -25,13 +25,14 @@ Fields:
 
 `internal/fork/keywordfilter` extracts text from common streaming payload formats:
 
+- SSE `data:` frames, including JSON payloads nested after the `data:` prefix
 - OpenAI-style `choices[].delta.content`
 - OpenAI-style `choices[].message.content`
 - OpenAI-style `choices[].text`
 - Claude-style `content_block_delta` and `content_block_start`
 - Gemini-style `candidates[].content.parts[].text`
 
-If a JSON payload does not expose known text fields, or the chunk is not JSON, the raw chunk bytes are treated as text. Each payload is parsed once per check, then the extracted text is evaluated against the active rules in configured order.
+If a JSON payload does not expose known text fields, or the chunk is not JSON, the raw chunk bytes are treated as text. Each payload is parsed once per check, then the extracted text is evaluated against the active rules in configured order. Stream checks keep bounded extracted text context across chunks so `start`, `end`, and `exact` modes use response-text boundaries even when upstream splits a sentence across multiple SSE frames.
 
 ## Runtime Behavior
 
@@ -40,7 +41,7 @@ The SDK auth conductor snapshots the active keyword filter rules once per stream
 - buffered bootstrap chunks before a stream is handed to callers
 - forwarded stream chunks before they leave the wrapped stream result
 
-Buffered chunks that pass the bootstrap check are forwarded without a second keyword scan. Later chunks continue to be scanned as they are forwarded.
+Buffered chunks that pass the bootstrap check are forwarded without a second keyword scan. Later chunks continue to be scanned as they are forwarded, using the accumulated extracted response text for boundary-sensitive match modes.
 
 On match, the conductor produces the error message:
 

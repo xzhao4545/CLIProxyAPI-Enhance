@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-const maxMatchTextRunes = 1024
+const (
+	maxMatchTextRunes  = 1024
+	maxStreamTextRunes = 65536
+)
 
 // MatchResult describes a keyword filter match.
 type MatchResult struct {
@@ -25,7 +29,60 @@ func CheckPayload(payload []byte, rules []config.KeywordFilterRule) *MatchResult
 	if len(payload) == 0 || len(rules) == 0 {
 		return nil
 	}
+	return checkTexts(extractTexts(payload), rules)
+}
 
+// CheckText checks already extracted response text against all enabled rules.
+func CheckText(text string, rules []config.KeywordFilterRule) *MatchResult {
+	if text == "" || len(rules) == 0 {
+		return nil
+	}
+	return checkTexts([]string{text}, rules)
+}
+
+// StreamChecker preserves extracted stream text across chunks so boundary
+// modes still work when upstream splits a sentence over multiple SSE frames.
+type StreamChecker struct {
+	rules []config.KeywordFilterRule
+	text  string
+}
+
+func NewStreamChecker(rules []config.KeywordFilterRule) *StreamChecker {
+	if len(rules) == 0 {
+		return nil
+	}
+	return &StreamChecker{rules: append([]config.KeywordFilterRule(nil), rules...)}
+}
+
+func (c *StreamChecker) CheckPayload(payload []byte) *MatchResult {
+	if c == nil || len(payload) == 0 || len(c.rules) == 0 {
+		return nil
+	}
+	for _, text := range extractTexts(payload) {
+		c.appendText(text)
+		if match := CheckText(c.text, c.rules); match != nil {
+			return match
+		}
+	}
+	return nil
+}
+
+func (c *StreamChecker) appendText(text string) {
+	if text == "" {
+		return
+	}
+	c.text += text
+	if utf8.RuneCountInString(c.text) <= maxStreamTextRunes {
+		return
+	}
+	runes := []rune(c.text)
+	c.text = string(runes[len(runes)-maxStreamTextRunes:])
+}
+
+func checkTexts(texts []string, rules []config.KeywordFilterRule) *MatchResult {
+	if len(texts) == 0 {
+		return nil
+	}
 	preparedRules := make([]preparedRule, 0, len(rules))
 	for ri := range rules {
 		rule := &rules[ri]
@@ -48,7 +105,6 @@ func CheckPayload(payload []byte, rules []config.KeywordFilterRule) *MatchResult
 		return nil
 	}
 
-	texts := extractTexts(payload)
 	lowerTexts := make([]string, len(texts))
 	for _, rule := range preparedRules {
 		for ti, text := range texts {
@@ -83,9 +139,9 @@ type preparedRule struct {
 func matchText(text, keyword, mode string) bool {
 	switch mode {
 	case "start":
-		return strings.HasPrefix(text, keyword)
+		return strings.HasPrefix(strings.TrimLeftFunc(text, unicode.IsSpace), keyword)
 	case "end":
-		return strings.HasSuffix(text, keyword)
+		return strings.HasSuffix(strings.TrimRightFunc(text, unicode.IsSpace), keyword)
 	case "exact":
 		return text == keyword
 	default: // "anywhere"
@@ -159,12 +215,16 @@ func keywordRuneIndex(text, keyword string, caseSensitive bool) int {
 }
 
 func extractTexts(payload []byte) []string {
-	if !bytes.HasPrefix(bytes.TrimSpace(payload), []byte{'{'}) {
+	trimmed := bytes.TrimSpace(payload)
+	if texts := extractSSEDataTexts(trimmed); len(texts) > 0 {
+		return texts
+	}
+	if !bytes.HasPrefix(trimmed, []byte{'{'}) {
 		return []string{string(payload)}
 	}
 
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &raw); err != nil {
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
 		return []string{string(payload)}
 	}
 
@@ -255,6 +315,30 @@ func extractTexts(payload []byte) []string {
 
 	if len(texts) == 0 {
 		return []string{string(payload)}
+	}
+	return texts
+}
+
+func extractSSEDataTexts(payload []byte) []string {
+	var texts []string
+	hasDataLine := false
+	for _, line := range bytes.Split(payload, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || bytes.HasPrefix(line, []byte{':'}) {
+			continue
+		}
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		hasDataLine = true
+		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			continue
+		}
+		texts = append(texts, extractTexts(data)...)
+	}
+	if !hasDataLine {
+		return nil
 	}
 	return texts
 }

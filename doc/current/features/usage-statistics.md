@@ -41,7 +41,7 @@ Metrics include:
 
 Failure rows group by failure dimensions such as error stage, error code, provider, and model. Raw provider error payloads are not returned by default. `include_error_raw=true` is required on event queries and the stored value is size-limited and sanitized.
 
-Stream wrappers can mark a request-scoped failure override after an upstream stream has started. The usage manager applies that override before publishing or persisting the record, so late stream failures are stored with `status=failure` and their failure code/message. Keyword filter matches use this path with `error_stage=stream`, `error_code=keyword_filtered`, and an error message containing the matched keyword plus bounded response context.
+Stream wrappers can mark a request-scoped failure override after an upstream stream has started. Usage records published inside that request-scoped override are held until the stream attempt reaches its final outcome, then the usage manager applies the final override before plugins persist the record. Late stream failures are stored with `status=failure` and their failure code/message. Keyword filter matches use this path with `error_stage=stream`, `error_code=keyword_filtered`, and an error message containing the matched keyword plus bounded response context.
 
 ## Provider Display Names
 

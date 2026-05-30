@@ -819,12 +819,16 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, keywordRules []internalconfig.KeywordFilterRule) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
-		defer close(out)
+		defer func() {
+			coreusage.FlushFailureOverrideRecords(ctx)
+			close(out)
+		}()
 		var failed bool
 		forward := true
+		checker := keywordfilter.NewStreamChecker(keywordRules)
 		emit := func(chunk cliproxyexecutor.StreamChunk, checkKeyword bool) bool {
 			if checkKeyword && chunk.Err == nil && len(chunk.Payload) > 0 && !failed && len(keywordRules) > 0 {
-				if match := keywordfilter.CheckPayload(chunk.Payload, keywordRules); match != nil {
+				if match := checker.CheckPayload(chunk.Payload); match != nil {
 					message := keywordfilter.ErrorMessage(match)
 					markKeywordFilterUsageFailure(ctx, message)
 					chunk = cliproxyexecutor.StreamChunk{
@@ -881,11 +885,12 @@ func checkKeywordFilter(ctx context.Context, buffered []cliproxyexecutor.StreamC
 	if len(rules) == 0 {
 		return nil
 	}
+	checker := keywordfilter.NewStreamChecker(rules)
 	for _, chunk := range buffered {
 		if len(chunk.Payload) == 0 {
 			continue
 		}
-		if match := keywordfilter.CheckPayload(chunk.Payload, rules); match != nil {
+		if match := checker.CheckPayload(chunk.Payload); match != nil {
 			message := keywordfilter.ErrorMessage(match)
 			markKeywordFilterUsageFailure(ctx, message)
 			return &Error{
@@ -934,6 +939,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		streamResult, errStream := executor.ExecuteStream(execCtx, auth, execReq, opts)
 		if errStream != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
+				coreusage.FlushFailureOverrideRecords(execCtx)
 				return nil, errCtx
 			}
 			rerr := &Error{Message: errStream.Error()}
@@ -943,6 +949,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
 			m.MarkResult(execCtx, result)
+			coreusage.FlushFailureOverrideRecords(execCtx)
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
@@ -954,6 +961,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if bootstrapErr != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				discardStreamChunks(streamResult.Chunks)
+				coreusage.FlushFailureOverrideRecords(execCtx)
 				return nil, errCtx
 			}
 			if isRequestInvalidError(bootstrapErr) {
@@ -965,6 +973,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				m.MarkResult(execCtx, result)
 				discardStreamChunks(streamResult.Chunks)
+				coreusage.FlushFailureOverrideRecords(execCtx)
 				return nil, bootstrapErr
 			}
 			if idx < len(execModels)-1 {
@@ -987,6 +996,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
 			m.MarkResult(execCtx, result)
 			discardStreamChunks(streamResult.Chunks)
+			coreusage.FlushFailureOverrideRecords(execCtx)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}
 
@@ -994,6 +1004,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			emptyErr := &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr}
 			m.MarkResult(execCtx, result)
+			coreusage.FlushFailureOverrideRecords(execCtx)
 			if idx < len(execModels)-1 {
 				lastErr = emptyErr
 				continue
@@ -1009,6 +1020,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: kwErr}
 			m.MarkResult(execCtx, result)
 			discardStreamChunks(streamResult.Chunks)
+			coreusage.FlushFailureOverrideRecords(execCtx)
 			if idx < len(execModels)-1 {
 				lastErr = errors.New(kwErr.Message)
 				continue
