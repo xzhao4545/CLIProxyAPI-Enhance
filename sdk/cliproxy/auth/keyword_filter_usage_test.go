@@ -82,6 +82,45 @@ func (p *captureUsagePlugin) HandleUsage(_ context.Context, record coreusage.Rec
 	p.records <- record
 }
 
+type keywordFilterProviderFallbackExecutor struct {
+	id      string
+	success []byte
+	fail    []cliproxyexecutor.StreamChunk
+}
+
+func (e *keywordFilterProviderFallbackExecutor) Identifier() string { return e.id }
+
+func (e *keywordFilterProviderFallbackExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusNotImplemented, Message: "Execute not implemented"}
+}
+
+func (e *keywordFilterProviderFallbackExecutor) ExecuteStream(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	_ = ctx
+	_ = req
+	chunks := make(chan cliproxyexecutor.StreamChunk, 4)
+	if len(e.fail) > 0 && auth.Provider == e.id {
+		for _, chunk := range e.fail {
+			chunks <- chunk
+		}
+	} else {
+		chunks <- cliproxyexecutor.StreamChunk{Payload: e.success}
+	}
+	close(chunks)
+	return &cliproxyexecutor.StreamResult{Headers: http.Header{"X-Auth": {auth.ID}}, Chunks: chunks}, nil
+}
+
+func (e *keywordFilterProviderFallbackExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	return auth, nil
+}
+
+func (e *keywordFilterProviderFallbackExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusNotImplemented, Message: "CountTokens not implemented"}
+}
+
+func (e *keywordFilterProviderFallbackExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, &Error{HTTPStatus: http.StatusNotImplemented, Message: "HttpRequest not implemented"}
+}
+
 func TestKeywordFilterBootstrapMatchCoolsDownAndReturns429(t *testing.T) {
 	authID := "kw-auth-" + t.Name()
 
@@ -315,14 +354,13 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	}
 
 	first := <-streamResult.Chunks
-	if first.Err != nil {
-		t.Fatalf("first chunk error = %v", first.Err)
-	}
-	second := <-streamResult.Chunks
-	if second.Err == nil {
+	if first.Err == nil {
 		t.Fatal("expected keyword filter error")
 	}
-	if got := second.Err.Error(); !strings.Contains(got, "quota exhausted") || !strings.Contains(got, "quota exhausted for this account") {
+	if status := statusCodeFromError(first.Err); status != http.StatusTooManyRequests {
+		t.Fatalf("keyword filter status = %d, want %d", status, http.StatusTooManyRequests)
+	}
+	if got := first.Err.Error(); !strings.Contains(got, "quota exhausted") || !strings.Contains(got, "quota exhausted for this account") {
 		t.Fatalf("keyword error = %q, want keyword and matched text", got)
 	}
 	assertKeywordFilterCooldown(t, m, authID, "kw-model")
@@ -340,6 +378,161 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for fallback usage record")
+	}
+}
+
+func TestKeywordFilterStreamUsesBootstrapTextForSplitStartMatch(t *testing.T) {
+	authID := "kw-auth-" + t.Name()
+
+	m := NewManager(nil, nil, nil)
+	m.SetConfig(&internalconfig.Config{KeywordFilters: []internalconfig.KeywordFilterRule{{
+		Keyword:   "quota exhausted",
+		MatchMode: "start",
+		Enabled:   true,
+	}}})
+	m.RegisterExecutor(&keywordFilterUsageExecutor{
+		suppressUsage: true,
+		firstPayload:  []byte(`data: {"choices":[{"delta":{"content":"quota "}}]}`),
+		secondPayload: []byte(`data: {"choices":[{"delta":{"content":"exhausted for this account"}}]}`),
+	})
+	auth := &Auth{ID: authID, Provider: "kw", Status: StatusActive}
+	if _, err := m.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(authID, "kw", []*registry.ModelInfo{{ID: "kw-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
+
+	streamResult, err := m.ExecuteStream(context.Background(), []string{"kw"}, cliproxyexecutor.Request{Model: "kw-model"}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	first := <-streamResult.Chunks
+	if first.Err != nil {
+		t.Fatalf("first chunk error = %v", first.Err)
+	}
+	second := <-streamResult.Chunks
+	if second.Err == nil {
+		t.Fatal("second chunk error = nil, want split keyword match")
+	}
+	if got := second.Err.Error(); !strings.Contains(got, "quota exhausted for this account") {
+		t.Fatalf("split keyword error = %q, want accumulated match text", got)
+	}
+	assertKeywordFilterCooldown(t, m, authID, "kw-model")
+}
+
+func TestKeywordFilterMetadataBootstrapFallsBackToNextProvider(t *testing.T) {
+	tests := []struct {
+		name string
+		fail []cliproxyexecutor.StreamChunk
+	}{
+		{
+			name: "openai responses",
+			fail: []cliproxyexecutor.StreamChunk{
+				{Payload: []byte(`event: response.created
+data: {"type":"response.created","response":{"output":[]}}
+
+`)},
+				{Payload: []byte(`event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"quota exhausted for this account"}
+
+`)},
+			},
+		},
+		{
+			name: "anthropic",
+			fail: []cliproxyexecutor.StreamChunk{
+				{Payload: []byte(`event: message_start
+data: {"type":"message_start","message":{"content":[]}}
+
+`)},
+				{Payload: []byte(`event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"quota exhausted for this account"}}
+
+`)},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			badProvider := "kw-bad-" + strings.ReplaceAll(tt.name, " ", "-")
+			goodProvider := "kw-good-" + strings.ReplaceAll(tt.name, " ", "-")
+			badAuthID := badProvider + "-auth"
+			goodAuthID := goodProvider + "-auth"
+			plugin := &captureUsagePlugin{authID: badAuthID, records: make(chan coreusage.Record, 1)}
+			coreusage.RegisterPlugin(plugin)
+
+			executor := &keywordFilterProviderFallbackExecutor{
+				id:      badProvider,
+				success: []byte(`data: {"choices":[{"delta":{"content":"fallback success"}}]}`),
+				fail:    tt.fail,
+			}
+
+			m := NewManager(nil, nil, nil)
+			m.SetConfig(&internalconfig.Config{KeywordFilters: []internalconfig.KeywordFilterRule{{
+				Keyword:   "quota exhausted",
+				MatchMode: "start",
+				Enabled:   true,
+			}}})
+			m.RegisterExecutor(executor)
+			m.RegisterExecutor(&keywordFilterProviderFallbackExecutor{
+				id:      goodProvider,
+				success: []byte(`data: {"choices":[{"delta":{"content":"fallback success"}}]}`),
+			})
+
+			badAuth := &Auth{ID: badAuthID, Provider: badProvider, Status: StatusActive}
+			goodAuth := &Auth{ID: goodAuthID, Provider: goodProvider, Status: StatusActive}
+			if _, err := m.Register(context.Background(), badAuth); err != nil {
+				t.Fatalf("register bad auth: %v", err)
+			}
+			if _, err := m.Register(context.Background(), goodAuth); err != nil {
+				t.Fatalf("register good auth: %v", err)
+			}
+
+			registry.GetGlobalRegistry().RegisterClient(badAuthID, badProvider, []*registry.ModelInfo{{ID: "kw-model"}})
+			registry.GetGlobalRegistry().RegisterClient(goodAuthID, goodProvider, []*registry.ModelInfo{{ID: "kw-model"}})
+			t.Cleanup(func() {
+				registry.GetGlobalRegistry().UnregisterClient(badAuthID)
+				registry.GetGlobalRegistry().UnregisterClient(goodAuthID)
+			})
+
+			streamResult, err := m.ExecuteStream(context.Background(), []string{badProvider, goodProvider}, cliproxyexecutor.Request{Model: "kw-model"}, cliproxyexecutor.Options{})
+			if err != nil {
+				t.Fatalf("ExecuteStream() error = %v", err)
+			}
+			if streamResult == nil {
+				t.Fatal("ExecuteStream() streamResult = nil, want fallback stream")
+			}
+
+			first := <-streamResult.Chunks
+			if first.Err != nil {
+				t.Fatalf("fallback chunk error = %v", first.Err)
+			}
+			if got := string(first.Payload); !strings.Contains(got, "fallback success") {
+				t.Fatalf("fallback payload = %q, want success from second provider", got)
+			}
+			assertKeywordFilterCooldown(t, m, badAuthID, "kw-model")
+			updatedGood, ok := m.GetByID(goodAuthID)
+			if !ok {
+				t.Fatalf("good auth %q not found", goodAuthID)
+			}
+			if state := updatedGood.ModelStates["kw-model"]; state != nil && state.Unavailable {
+				t.Fatalf("good auth model state = %#v, want available", state)
+			}
+
+			select {
+			case record := <-plugin.records:
+				if !record.Failed {
+					t.Fatalf("fallback usage Failed = false, want true: %#v", record)
+				}
+				if record.AuthID != badAuthID || record.Fail.Code != "keyword_filtered" {
+					t.Fatalf("fallback usage record = %#v, want bad auth keyword failure", record)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for fallback usage record")
+			}
+		})
 	}
 }
 

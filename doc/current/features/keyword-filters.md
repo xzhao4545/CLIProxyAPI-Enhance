@@ -42,7 +42,7 @@ The SDK auth conductor snapshots the active keyword filter rules once per stream
 - buffered bootstrap chunks before a stream is handed to callers
 - forwarded stream chunks before they leave the wrapped stream result
 
-Buffered chunks that pass the bootstrap check are forwarded without a second keyword scan. Later chunks continue to be scanned as they are forwarded, using the accumulated extracted response text for boundary-sensitive match modes.
+During bootstrap, metadata-only chunks are buffered until the first chunk with extracted response text, a keyword match, an upstream error, stream close, or the bounded bootstrap buffer limit. This keeps OpenAI Responses and Anthropic metadata frames from committing HTTP streaming headers before the first real response text can be filtered. Buffered chunks that pass the bootstrap check are forwarded without a second keyword scan. Later chunks continue to be scanned as they are forwarded, using the same accumulated extracted response text for boundary-sensitive match modes.
 
 On match, the conductor produces the error message:
 
@@ -50,7 +50,7 @@ On match, the conductor produces the error message:
 keyword filter matched: response contains "<matched text>" (keyword: "<keyword>")
 ```
 
-The matched text is the original response text or a bounded excerpt around the matched keyword for large chunks. Matches are marked with code `keyword_filtered`, `Retryable: true`, and an internal HTTP status of `429`, so the current auth/model enters the existing quota cooldown path before fallback selection continues. If more candidate models or credentials are available, the conductor can continue to the next candidate. Stream-time matches are recorded as failed usage with the `keyword_filtered` code and the same message body. If the stream is filtered before the upstream emits token usage, the request still produces a zero-token failed usage record so management statistics show the failure.
+The matched text is the original response text or a bounded excerpt around the matched keyword for large chunks. Matches are marked with code `keyword_filtered`, `Retryable: true`, and an internal HTTP status of `429`, so the current auth/model enters the existing quota cooldown path before fallback selection continues. If more candidate models or credentials are available, the conductor can continue to the next candidate before the downstream HTTP response is committed. Stream-time matches are recorded as failed usage with the `keyword_filtered` code and the same message body. If the stream is filtered before the upstream emits token usage, the request still produces a zero-token failed usage record so management statistics show the failure.
 
 OpenAI Chat Completions streams return the normal OpenAI-compatible error body. OpenAI Responses streams and Codex websocket sessions emit a Responses-native `response.failed` event and keep the generic `error` event for compatibility. Claude-compatible streams emit a Claude SSE `event: error` response with the keyword filter message in the error body.
 

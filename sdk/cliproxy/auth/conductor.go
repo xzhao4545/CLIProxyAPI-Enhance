@@ -784,11 +784,17 @@ func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamR
 	}
 }
 
-func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamChunk) ([]cliproxyexecutor.StreamChunk, bool, error) {
+const (
+	maxKeywordBootstrapChunks = 32
+	maxKeywordBootstrapBytes  = 256 * 1024
+)
+
+func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamChunk, checker *keywordfilter.StreamChecker) ([]cliproxyexecutor.StreamChunk, bool, *keywordfilter.MatchResult, error) {
 	if ch == nil {
-		return nil, true, nil
+		return nil, true, nil, nil
 	}
 	buffered := make([]cliproxyexecutor.StreamChunk, 0, 1)
+	bufferedBytes := 0
 	for {
 		var (
 			chunk cliproxyexecutor.StreamChunk
@@ -797,26 +803,38 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 		if ctx != nil {
 			select {
 			case <-ctx.Done():
-				return nil, false, ctx.Err()
+				return nil, false, nil, ctx.Err()
 			case chunk, ok = <-ch:
 			}
 		} else {
 			chunk, ok = <-ch
 		}
 		if !ok {
-			return buffered, true, nil
+			return buffered, true, nil, nil
 		}
 		if chunk.Err != nil {
-			return nil, false, chunk.Err
+			return nil, false, nil, chunk.Err
 		}
 		buffered = append(buffered, chunk)
 		if len(chunk.Payload) > 0 {
-			return buffered, false, nil
+			if checker == nil {
+				return buffered, false, nil, nil
+			}
+			result := checker.CheckPayloadResult(chunk.Payload)
+			if result.Match != nil {
+				return buffered, false, result.Match, nil
+			}
+			bufferedBytes += len(chunk.Payload)
+			if result.HasText ||
+				len(buffered) >= maxKeywordBootstrapChunks ||
+				bufferedBytes >= maxKeywordBootstrapBytes {
+				return buffered, false, nil, nil
+			}
 		}
 	}
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, keywordRules []internalconfig.KeywordFilterRule) *cliproxyexecutor.StreamResult {
+func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, keywordRules []internalconfig.KeywordFilterRule, checker *keywordfilter.StreamChecker) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer func() {
@@ -825,7 +843,9 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}()
 		var failed bool
 		forward := true
-		checker := keywordfilter.NewStreamChecker(keywordRules)
+		if checker == nil {
+			checker = keywordfilter.NewStreamChecker(keywordRules)
+		}
 		emit := func(chunk cliproxyexecutor.StreamChunk, checkKeyword bool) bool {
 			if checkKeyword && chunk.Err == nil && len(chunk.Payload) > 0 && !failed && len(keywordRules) > 0 {
 				if match := checker.CheckPayload(chunk.Payload); match != nil {
@@ -878,26 +898,6 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
-}
-
-// checkKeywordFilter checks buffered stream chunks against keyword filter rules.
-// Returns an Error if a keyword match is found, nil otherwise.
-func checkKeywordFilter(ctx context.Context, buffered []cliproxyexecutor.StreamChunk, rules []internalconfig.KeywordFilterRule, auth *Auth, provider, model string) *Error {
-	if len(rules) == 0 {
-		return nil
-	}
-	checker := keywordfilter.NewStreamChecker(rules)
-	for _, chunk := range buffered {
-		if len(chunk.Payload) == 0 {
-			continue
-		}
-		if match := checker.CheckPayload(chunk.Payload); match != nil {
-			message := keywordfilter.ErrorMessage(match)
-			markKeywordFilterUsageFailure(ctx, auth, provider, model, message)
-			return newKeywordFilterError(message)
-		}
-	}
-	return nil
 }
 
 func newKeywordFilterError(message string) *Error {
@@ -1009,7 +1009,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			continue
 		}
 
-		buffered, closed, bootstrapErr := readStreamBootstrap(execCtx, streamResult.Chunks)
+		keywordRules := m.keywordFilterRulesSnapshot()
+		keywordChecker := keywordfilter.NewStreamChecker(keywordRules)
+		buffered, closed, keywordMatch, bootstrapErr := readStreamBootstrap(execCtx, streamResult.Chunks, keywordChecker)
 		if bootstrapErr != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				discardStreamChunks(streamResult.Chunks)
@@ -1064,11 +1066,12 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			return nil, newStreamBootstrapError(emptyErr, streamResult.Headers)
 		}
 
-		keywordRules := m.keywordFilterRulesSnapshot()
-
 		// Check first buffered chunk payload against keyword filter rules.
 		// If matched, treat it as a bootstrap error and try the next model/auth.
-		if kwErr := checkKeywordFilter(execCtx, buffered, keywordRules, auth, provider, resultModel); kwErr != nil {
+		if keywordMatch != nil {
+			message := keywordfilter.ErrorMessage(keywordMatch)
+			markKeywordFilterUsageFailure(execCtx, auth, provider, resultModel, message)
+			kwErr := newKeywordFilterError(message)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: kwErr}
 			m.MarkResult(execCtx, result)
 			discardStreamChunks(streamResult.Chunks)
@@ -1086,7 +1089,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			close(closedCh)
 			remaining = closedCh
 		}
-		return m.wrapStreamResult(execCtx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, keywordRules), nil
+		return m.wrapStreamResult(execCtx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, keywordRules, keywordChecker), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}

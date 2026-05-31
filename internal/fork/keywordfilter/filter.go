@@ -25,6 +25,14 @@ type MatchResult struct {
 	Text      string
 }
 
+// PayloadCheckResult describes keyword matching and text extraction for a
+// stream chunk. HasText is false for transport/control metadata that should not
+// commit a stream response before the first real response text is inspected.
+type PayloadCheckResult struct {
+	Match   *MatchResult
+	HasText bool
+}
+
 type observeRule struct {
 	Index         int    `json:"index"`
 	Keyword       string `json:"keyword"`
@@ -92,8 +100,12 @@ func NewStreamChecker(rules []config.KeywordFilterRule) *StreamChecker {
 }
 
 func (c *StreamChecker) CheckPayload(payload []byte) *MatchResult {
+	return c.CheckPayloadResult(payload).Match
+}
+
+func (c *StreamChecker) CheckPayloadResult(payload []byte) PayloadCheckResult {
 	if c == nil || len(payload) == 0 || len(c.rules) == 0 {
-		return nil
+		return PayloadCheckResult{}
 	}
 	texts := extractTexts(payload)
 	for _, text := range texts {
@@ -108,7 +120,7 @@ func (c *StreamChecker) CheckPayload(payload []byte) *MatchResult {
 				RawPayload:     boundString(string(payload)),
 				Rules:          observeRules(c.rules),
 			})
-			return match
+			return PayloadCheckResult{Match: match, HasText: true}
 		}
 	}
 	writeObservation(observeEntry{
@@ -119,7 +131,7 @@ func (c *StreamChecker) CheckPayload(payload []byte) *MatchResult {
 		RawPayload:     boundString(string(payload)),
 		Rules:          observeRules(c.rules),
 	})
-	return nil
+	return PayloadCheckResult{HasText: len(texts) > 0}
 }
 
 func (c *StreamChecker) appendText(text string) {
