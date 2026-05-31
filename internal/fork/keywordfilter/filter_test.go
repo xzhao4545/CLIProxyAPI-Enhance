@@ -249,6 +249,54 @@ func TestCheckPayloadMatchesAnthropicContentBlockStartText(t *testing.T) {
 	}
 }
 
+func TestStreamCheckerStartModeIgnoresGeminiMetadata(t *testing.T) {
+	checker := NewStreamChecker([]config.KeywordFilterRule{{
+		Keyword:   "quota exhausted",
+		MatchMode: "start",
+		Enabled:   true,
+	}})
+	metadataPayloads := [][]byte{
+		[]byte(`{"candidates":[{"content":{"role":"model","parts":[]}}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"}}`),
+		[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]}}],"usageMetadata":{"promptTokenCount":1}}`),
+	}
+	for _, payload := range metadataPayloads {
+		if match := checker.CheckPayload(payload); match != nil {
+			t.Fatalf("metadata payload match = %#v, want nil", match)
+		}
+	}
+	match := checker.CheckPayload([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"quota exhausted for this account"}]}}]}`))
+	if match == nil {
+		t.Fatal("data payload match = nil, want start match after ignored Gemini metadata")
+	}
+	if match.Text != "quota exhausted for this account" {
+		t.Fatalf("match text = %q, want extracted response text", match.Text)
+	}
+}
+
+func TestCheckPayloadIgnoresGeminiMetadataRawJSON(t *testing.T) {
+	match := CheckPayload([]byte(`{"candidates":[{"content":{"role":"model","parts":[]}}],"usageMetadata":{"promptTokenCount":0}}`), []config.KeywordFilterRule{{
+		Keyword: "candidates",
+		Enabled: true,
+	}})
+	if match != nil {
+		t.Fatalf("metadata match = %#v, want nil", match)
+	}
+}
+
+func TestCheckPayloadExtractsNestedGeminiResponseCandidates(t *testing.T) {
+	match := CheckPayload([]byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"quota exhausted for this account"}]}}]}}`), []config.KeywordFilterRule{{
+		Keyword:   "quota exhausted",
+		MatchMode: "start",
+		Enabled:   true,
+	}})
+	if match == nil {
+		t.Fatal("CheckPayload() = nil, want nested Gemini response match")
+	}
+	if match.Text != "quota exhausted for this account" {
+		t.Fatalf("match text = %q, want extracted response text", match.Text)
+	}
+}
+
 func TestCheckPayloadIgnoresSSEDoneFrame(t *testing.T) {
 	match := CheckPayload([]byte("data: [DONE]"), []config.KeywordFilterRule{{
 		Keyword:   "DONE",

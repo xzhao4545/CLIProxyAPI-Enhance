@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -33,31 +31,6 @@ type PayloadCheckResult struct {
 	HasText bool
 }
 
-type observeRule struct {
-	Index         int    `json:"index"`
-	Keyword       string `json:"keyword"`
-	MatchMode     string `json:"match_mode"`
-	Enabled       bool   `json:"enabled"`
-	CaseSensitive bool   `json:"case_sensitive"`
-}
-
-type observeMatch struct {
-	RuleIndex int    `json:"rule_index"`
-	Keyword   string `json:"keyword"`
-	Text      string `json:"text"`
-}
-
-type observeEntry struct {
-	Time           string        `json:"time"`
-	Scope          string        `json:"scope"`
-	Matched        bool          `json:"matched"`
-	Match          *observeMatch `json:"match,omitempty"`
-	ExtractedTexts []string      `json:"extracted_texts,omitempty"`
-	StreamText     string        `json:"stream_text,omitempty"`
-	RawPayload     string        `json:"raw_payload,omitempty"`
-	Rules          []observeRule `json:"rules,omitempty"`
-}
-
 // CheckPayload checks a single chunk payload against all enabled keyword filter rules.
 // Returns nil if no rule matches.
 func CheckPayload(payload []byte, rules []config.KeywordFilterRule) *MatchResult {
@@ -65,16 +38,7 @@ func CheckPayload(payload []byte, rules []config.KeywordFilterRule) *MatchResult
 		return nil
 	}
 	texts := extractTexts(payload)
-	match := checkTexts(texts, rules)
-	writeObservation(observeEntry{
-		Scope:          "payload",
-		Matched:        match != nil,
-		Match:          observeMatchResult(match),
-		ExtractedTexts: boundStrings(texts),
-		RawPayload:     boundString(string(payload)),
-		Rules:          observeRules(rules),
-	})
-	return match
+	return checkTexts(texts, rules)
 }
 
 // CheckText checks already extracted response text against all enabled rules.
@@ -111,26 +75,9 @@ func (c *StreamChecker) CheckPayloadResult(payload []byte) PayloadCheckResult {
 	for _, text := range texts {
 		c.appendText(text)
 		if match := CheckText(c.text, c.rules); match != nil {
-			writeObservation(observeEntry{
-				Scope:          "stream",
-				Matched:        true,
-				Match:          observeMatchResult(match),
-				ExtractedTexts: boundStrings(texts),
-				StreamText:     boundString(c.text),
-				RawPayload:     boundString(string(payload)),
-				Rules:          observeRules(c.rules),
-			})
 			return PayloadCheckResult{Match: match, HasText: true}
 		}
 	}
-	writeObservation(observeEntry{
-		Scope:          "stream",
-		Matched:        false,
-		ExtractedTexts: boundStrings(texts),
-		StreamText:     boundString(c.text),
-		RawPayload:     boundString(string(payload)),
-		Rules:          observeRules(c.rules),
-	})
 	return PayloadCheckResult{HasText: len(texts) > 0}
 }
 
@@ -299,6 +246,7 @@ func extractTexts(payload []byte) []string {
 	}
 
 	var texts []string
+	hasGeminiCandidates := false
 
 	if choices, ok := raw["choices"]; ok {
 		var arr []json.RawMessage
@@ -372,34 +320,49 @@ func extractTexts(payload []byte) []string {
 	}
 
 	if candidates, ok := raw["candidates"]; ok {
-		var arr []json.RawMessage
-		if json.Unmarshal(candidates, &arr) == nil {
-			for _, item := range arr {
-				var c struct {
-					Content *struct {
-						Parts []struct {
-							Text string `json:"text"`
-						} `json:"parts"`
-					} `json:"content"`
-				}
-				if json.Unmarshal(item, &c) == nil && c.Content != nil {
-					for _, p := range c.Content.Parts {
-						if p.Text != "" {
-							texts = append(texts, p.Text)
-						}
-					}
-				}
+		hasGeminiCandidates = true
+		appendGeminiCandidateTexts(&texts, candidates)
+	}
+	if responseRaw, ok := raw["response"]; ok {
+		var response map[string]json.RawMessage
+		if json.Unmarshal(responseRaw, &response) == nil {
+			if candidates, ok := response["candidates"]; ok {
+				hasGeminiCandidates = true
+				appendGeminiCandidateTexts(&texts, candidates)
 			}
 		}
 	}
 
 	if len(texts) == 0 {
-		if isOpenAIResponseEvent(raw) || isAnthropicStreamEvent(raw) {
+		if isOpenAIResponseEvent(raw) || isAnthropicStreamEvent(raw) || hasGeminiCandidates {
 			return nil
 		}
 		return []string{string(payload)}
 	}
 	return texts
+}
+
+func appendGeminiCandidateTexts(texts *[]string, raw json.RawMessage) {
+	var arr []json.RawMessage
+	if json.Unmarshal(raw, &arr) != nil {
+		return
+	}
+	for _, item := range arr {
+		var c struct {
+			Content *struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(item, &c) == nil && c.Content != nil {
+			for _, p := range c.Content.Parts {
+				if p.Text != "" {
+					*texts = append(*texts, p.Text)
+				}
+			}
+		}
+	}
 }
 
 func isOpenAIResponseEvent(raw map[string]json.RawMessage) bool {
@@ -545,76 +508,4 @@ func isSSEControlPayload(payload []byte) bool {
 // ErrorMessage formats the error message returned when a keyword filter matches.
 func ErrorMessage(match *MatchResult) string {
 	return fmt.Sprintf("keyword filter matched: response contains %q (keyword: %q)", match.Text, match.Keyword)
-}
-
-func observeMatchResult(match *MatchResult) *observeMatch {
-	if match == nil {
-		return nil
-	}
-	return &observeMatch{
-		RuleIndex: match.RuleIndex,
-		Keyword:   match.Keyword,
-		Text:      boundString(match.Text),
-	}
-}
-
-func observeRules(rules []config.KeywordFilterRule) []observeRule {
-	if len(rules) == 0 {
-		return nil
-	}
-	out := make([]observeRule, 0, len(rules))
-	for i, rule := range rules {
-		out = append(out, observeRule{
-			Index:         i,
-			Keyword:       rule.Keyword,
-			MatchMode:     normalizedObserveMatchMode(rule.MatchMode),
-			Enabled:       rule.Enabled,
-			CaseSensitive: rule.CaseSensitive,
-		})
-	}
-	return out
-}
-
-func normalizedObserveMatchMode(mode string) string {
-	mode = strings.TrimSpace(mode)
-	if mode == "" {
-		return "anywhere"
-	}
-	return mode
-}
-
-func boundStrings(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		out = append(out, boundString(value))
-	}
-	return out
-}
-
-func boundString(value string) string {
-	const maxObserveRunes = 4096
-	if utf8.RuneCountInString(value) <= maxObserveRunes {
-		return value
-	}
-	runes := []rune(value)
-	return string(runes[:maxObserveRunes]) + "..."
-}
-
-func writeObservation(entry observeEntry) {
-	entry.Time = time.Now().UTC().Format(time.RFC3339Nano)
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile("keyword-filter-observe.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return
-	}
-	defer func() {
-		_ = f.Close()
-	}()
-	_, _ = f.Write(append(data, '\n'))
 }

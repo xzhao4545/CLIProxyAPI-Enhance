@@ -452,6 +452,13 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 `)},
 			},
 		},
+		{
+			name: "gemini",
+			fail: []cliproxyexecutor.StreamChunk{
+				{Payload: []byte(`{"candidates":[{"content":{"role":"model","parts":[]}}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"},"modelVersion":"test-model","responseId":"resp_1"}`)},
+				{Payload: []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"quota exhausted for this account"}]}}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"},"modelVersion":"test-model","responseId":"resp_1"}`)},
+			},
+		},
 	}
 
 	for _, tt := range tests {

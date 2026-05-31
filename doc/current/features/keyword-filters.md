@@ -33,7 +33,7 @@ Fields:
 - Claude-style `content_block_delta` and `content_block_start`
 - Gemini-style `candidates[].content.parts[].text`
 
-SSE control-only frames such as `event:`, `id:`, and `retry:` are ignored. OpenAI Responses metadata events and Anthropic stream metadata events that do not expose response text are ignored. If another JSON payload does not expose known text fields, or the chunk is not JSON, the raw chunk bytes are treated as text. Each payload is parsed once per check, then the extracted text is evaluated against the active rules in configured order. Stream checks keep bounded extracted text context across chunks so `start`, `end`, and `exact` modes use response-text boundaries even when upstream splits a sentence across multiple SSE frames.
+SSE control-only frames such as `event:`, `id:`, and `retry:` are ignored. OpenAI Responses metadata events, Anthropic stream metadata events, and Gemini candidate frames that do not expose response text are ignored. If another JSON payload does not expose known text fields, or the chunk is not JSON, the raw chunk bytes are treated as text. Each payload is parsed once per check, then the extracted text is evaluated against the active rules in configured order. Stream checks keep bounded extracted text context across chunks so `start`, `end`, and `exact` modes use response-text boundaries even when upstream splits a sentence across multiple SSE frames.
 
 ## Runtime Behavior
 
