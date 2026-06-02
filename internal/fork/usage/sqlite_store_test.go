@@ -57,7 +57,7 @@ func TestSQLiteStoreInsertQueryAndAggregate(t *testing.T) {
 	})
 
 	page, err := store.QueryEvents(QueryFilter{
-		Provider: "gemini",
+		Provider: "Gemini Primary",
 		DateFrom: ptrTime(base.Add(-time.Second)),
 		DateTo:   ptrTime(base.Add(time.Hour)),
 	})
@@ -104,7 +104,7 @@ func TestSQLiteStoreInsertQueryAndAggregate(t *testing.T) {
 		}
 	}
 
-	failures, err := store.QueryFailures(QueryFilter{Provider: "claude"})
+	failures, err := store.QueryFailures(QueryFilter{Provider: "Claude Backup"})
 	if err != nil {
 		t.Fatalf("QueryFailures() error = %v", err)
 	}
@@ -304,9 +304,9 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 	if page.Total != 2 {
 		t.Fatalf("provider label filter total = %d, want 2", page.Total)
 	}
-	page, err = store.QueryEvents(QueryFilter{Provider: "codex#1"})
+	page, err = store.QueryEvents(QueryFilter{RawProvider: "codex#1"})
 	if err != nil {
-		t.Fatalf("QueryEvents(provider key) error = %v", err)
+		t.Fatalf("QueryEvents(raw provider key) error = %v", err)
 	}
 	if page.Total != 1 {
 		t.Fatalf("legacy provider key filter total = %d, want 1", page.Total)
@@ -316,7 +316,7 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryFailures() error = %v", err)
 	}
-	if len(failures) != 1 || failures[0].ProviderKey != "Shared Codex" || failures[0].Requests != 1 {
+	if len(failures) != 1 || failures[0].ProviderKey != "codex#2" || failures[0].Requests != 1 {
 		t.Fatalf("failures = %+v", failures)
 	}
 }
@@ -391,6 +391,13 @@ INSERT INTO usage_events (
 	}
 	if rollupRequests != 2 || rollupTokens != 30 {
 		t.Fatalf("rollup requests=%d tokens=%d, want 2/30", rollupRequests, rollupTokens)
+	}
+	var rollupVersion string
+	if err := store.db.QueryRowContext(context.Background(), "SELECT value FROM usage_meta WHERE key = 'rollup_version'").Scan(&rollupVersion); err != nil {
+		t.Fatalf("query rollup version error = %v", err)
+	}
+	if rollupVersion != usageRollupVersion {
+		t.Fatalf("rollupVersion = %q, want %q", rollupVersion, usageRollupVersion)
 	}
 	summary, err := store.QuerySummary(SummaryFilter{GroupBy: "provider"})
 	if err != nil {
@@ -471,6 +478,63 @@ func TestSQLiteStoreMixedRollupRangeMatchesExpectedTotals(t *testing.T) {
 	sharedSummary := requireSummaryProvider(t, summary, "Shared Codex")
 	if sharedSummary.Requests != 3 || sharedSummary.Successful != 2 || sharedSummary.Failed != 1 || sharedSummary.TotalTokens != 60 {
 		t.Fatalf("mixed summary = %+v", sharedSummary)
+	}
+}
+
+func TestSQLiteStoreProviderFilterUsesStatsNamespaceOnly(t *testing.T) {
+	store := openTestStore(t)
+	defer closeTestStore(t, store)
+
+	base := time.Date(2026, 5, 28, 13, 0, 0, 0, time.UTC)
+	mustInsertEvent(t, store, Event{
+		StartedAt:        base.Add(10 * time.Minute),
+		CompletedAt:      base.Add(10 * time.Minute),
+		ProviderKey:      "gemini",
+		ProviderLabel:    "gemini",
+		AuthID:           "auth-raw",
+		AuthIndex:        "idx-raw",
+		Model:            "gemini-pro",
+		Status:           StatusSuccess,
+		PromptTokens:     1,
+		CompletionTokens: 9,
+		TotalTokens:      10,
+	})
+	mustInsertEvent(t, store, Event{
+		StartedAt:        base.Add(time.Hour + 10*time.Minute),
+		CompletedAt:      base.Add(time.Hour + 10*time.Minute),
+		ProviderKey:      "other",
+		ProviderLabel:    "gemini",
+		AuthID:           "auth-labeled",
+		AuthIndex:        "idx-labeled",
+		Model:            "gemini-pro",
+		Status:           StatusSuccess,
+		PromptTokens:     2,
+		CompletionTokens: 18,
+		TotalTokens:      20,
+	})
+
+	page, err := store.QueryEvents(QueryFilter{Provider: "gemini"})
+	if err != nil {
+		t.Fatalf("QueryEvents(provider stats key) error = %v", err)
+	}
+	if page.Total != 1 || page.Events[0].ProviderKey != "other" {
+		t.Fatalf("stats provider filter page = %+v", page)
+	}
+	rawPage, err := store.QueryEvents(QueryFilter{RawProvider: "gemini"})
+	if err != nil {
+		t.Fatalf("QueryEvents(raw provider) error = %v", err)
+	}
+	if rawPage.Total != 1 || rawPage.Events[0].ProviderKey != "gemini" {
+		t.Fatalf("raw provider filter page = %+v", rawPage)
+	}
+	from := base.Add(5 * time.Minute)
+	to := base.Add(time.Hour + 20*time.Minute)
+	metrics, err := store.QueryMetrics(QueryFilter{Provider: "gemini", DateFrom: &from, DateTo: &to})
+	if err != nil {
+		t.Fatalf("QueryMetrics(provider stats key) error = %v", err)
+	}
+	if metrics.TotalRequests != 1 || metrics.TotalTokens != 20 {
+		t.Fatalf("stats provider metrics = %+v", metrics)
 	}
 }
 

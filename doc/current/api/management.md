@@ -91,6 +91,7 @@ Common filters:
 
 ```text
 provider
+raw_provider
 provider_label
 model
 client_model
@@ -112,7 +113,9 @@ order
 
 `summary` accepts `group_by=day|provider|model|provider_model|status`.
 
-`filters` returns provider options with keys, display labels, auth IDs, and auth positions when available. `metrics` returns request, token, RPM, TPM, provider, and model aggregates for the selected window.
+`provider` matches the usage statistics provider identity returned by filter options. `raw_provider` matches the original raw `provider_key` stored on usage events.
+
+`filters` returns provider options with statistics keys, display labels, auth IDs, and auth positions when available. `metrics` returns request, token, RPM, TPM, provider, and model aggregates for the selected window.
 
 ## Management Panel Routes
 

@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS usage_rollup_hourly (
 	cached_tokens INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (bucket_start, stats_provider_key, model, client_model, status)
 );
+
+CREATE TABLE IF NOT EXISTS usage_meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
 `
 
 const usageIndexesSchema = `

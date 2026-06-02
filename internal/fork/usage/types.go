@@ -43,6 +43,7 @@ type Event struct {
 
 type QueryFilter struct {
 	Provider        string
+	RawProvider     string
 	ProviderLabel   string
 	Model           string
 	ClientModel     string

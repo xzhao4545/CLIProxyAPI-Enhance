@@ -166,6 +166,7 @@ func parseQueryFilter(c *gin.Context) (QueryFilter, bool) {
 	}
 	return QueryFilter{
 		Provider:      c.Query("provider"),
+		RawProvider:   c.Query("raw_provider"),
 		ProviderLabel: c.Query("provider_label"),
 		Model:         c.Query("model"),
 		ClientModel:   c.Query("client_model"),

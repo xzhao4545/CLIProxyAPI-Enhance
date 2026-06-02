@@ -152,25 +152,25 @@ func (s *SQLiteStore) QueryFailuresContext(ctx context.Context, filter QueryFilt
 	where, args := buildWhere(filter, false)
 	query := `
 WITH filtered_usage AS (
-	SELECT *, ` + providerStatsKeySQL() + ` AS provider_group_key, ` + providerStatsLabelSQL() + ` AS provider_group_label FROM usage_events` + where + `
+	SELECT * FROM usage_events` + where + `
 )
 SELECT
 	COALESCE(error_stage, ''),
 	COALESCE(error_code, ''),
-	provider_group_key,
-	provider_group_label,
+	provider_key,
+	provider_label,
 	model,
 	COUNT(*) AS requests,
 	COALESCE((SELECT e2.error_message FROM filtered_usage e2
 		WHERE e2.status = 'failure'
 		  AND COALESCE(e2.error_stage, '') = COALESCE(filtered_usage.error_stage, '')
 		  AND COALESCE(e2.error_code, '') = COALESCE(filtered_usage.error_code, '')
-		  AND e2.provider_group_key = filtered_usage.provider_group_key
+		  AND e2.provider_key = filtered_usage.provider_key
 		  AND e2.model = filtered_usage.model
 		ORDER BY e2.started_at DESC, e2.id DESC LIMIT 1), '') AS last_message,
 	MAX(started_at) AS last_seen_at
 FROM filtered_usage
-GROUP BY COALESCE(error_stage, ''), COALESCE(error_code, ''), provider_group_key, provider_group_label, model
+GROUP BY COALESCE(error_stage, ''), COALESCE(error_code, ''), provider_key, provider_label, model
 ORDER BY requests DESC, last_seen_at DESC`
 	rows, errQuery := s.db.QueryContext(ctx, query, args...)
 	if errQuery != nil {
@@ -317,6 +317,7 @@ FROM usage_events`+where, args...)
 
 func normalizeQueryFilter(filter QueryFilter) QueryFilter {
 	filter.Provider = strings.TrimSpace(filter.Provider)
+	filter.RawProvider = strings.TrimSpace(filter.RawProvider)
 	filter.ProviderLabel = strings.TrimSpace(filter.ProviderLabel)
 	filter.Model = strings.TrimSpace(filter.Model)
 	filter.ClientModel = strings.TrimSpace(filter.ClientModel)
@@ -348,7 +349,10 @@ func buildWhere(filter QueryFilter, includePagination bool) (string, []any) {
 		args = append(args, values...)
 	}
 	if filter.Provider != "" {
-		add("("+providerStatsKeySQL()+" = ? OR provider_key = ?)", filter.Provider, filter.Provider)
+		add("stats_provider_key = ?", filter.Provider)
+	}
+	if filter.RawProvider != "" {
+		add("provider_key = ?", filter.RawProvider)
 	}
 	if filter.ProviderLabel != "" {
 		add("provider_label = ?", filter.ProviderLabel)
@@ -842,11 +846,11 @@ ORDER BY requests DESC`, args...)
 }
 
 func providerStatsKeySQL() string {
-	return "COALESCE(NULLIF(TRIM(stats_provider_key), ''), " + providerStatsFallbackKeySQL() + ")"
+	return "stats_provider_key"
 }
 
 func providerStatsLabelSQL() string {
-	return "COALESCE(NULLIF(TRIM(stats_provider_label), ''), " + providerStatsFallbackLabelSQL() + ")"
+	return "stats_provider_label"
 }
 
 func providerStatsFallbackKeySQL() string {
@@ -1117,7 +1121,7 @@ ORDER BY requests DESC`, args...)
 }
 
 func isUsageRollupCompatible(filter QueryFilter) bool {
-	if filter.ErrorStage != "" || filter.ErrorCode != "" || filter.AuthID != "" || filter.AuthLabel != "" || filter.ClientKeyHash != "" {
+	if filter.RawProvider != "" || filter.ErrorStage != "" || filter.ErrorCode != "" || filter.AuthID != "" || filter.AuthLabel != "" || filter.ClientKeyHash != "" {
 		return false
 	}
 	return true

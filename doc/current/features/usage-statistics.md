@@ -29,7 +29,7 @@ Relative `usage.sqlite-path` values resolve beside the active config file. The d
 
 The management usage handler exposes event, summary, failure, filter, and metric endpoints under both `/usage` and `/api/usage` inside `/v0/management`.
 
-Supported query dimensions include provider, provider label, model, client model, status, error stage, error code, auth ID, auth label, client key hash, and date range.
+Supported query dimensions include statistics provider identity, raw provider key, provider label, model, client model, status, error stage, error code, auth ID, auth label, client key hash, and date range.
 
 Metrics include:
 
@@ -41,7 +41,7 @@ Metrics include:
 
 ## Failure Handling
 
-Failure rows group by failure dimensions such as error stage, error code, provider, and model. Raw provider error payloads are not returned by default. `include_error_raw=true` is required on event queries and the stored value is size-limited and sanitized.
+Failure rows group by failure dimensions such as error stage, error code, raw provider key, raw provider label, and model. Raw provider error payloads are not returned by default. `include_error_raw=true` is required on event queries and the stored value is size-limited and sanitized.
 
 Stream wrappers can mark a request-scoped failure override after an upstream stream has started. Usage records published inside that request-scoped override are held until the stream attempt reaches its final outcome, then the usage manager applies the final override before plugins persist the record. Late stream failures are stored with `status=failure` and their failure code/message. Keyword filter matches use this path with `error_stage=stream`, `error_code=keyword_filtered`, and an error message containing the matched keyword plus bounded response context.
 
@@ -49,4 +49,4 @@ Stream wrappers can mark a request-scoped failure override after an upstream str
 
 Usage records keep stable provider keys, auth IDs, auth labels, and auth indexes on each raw event. Aggregated usage views use the persisted statistics provider identity: non-empty provider labels are grouped as one provider, and records without a distinct label fall back to their auth index before the provider key. Built-in provider configs and OpenAI-compatible provider configs support optional labels. A `usage.provider-labels` map can override labels for providers that do not expose credential-specific names.
 
-Filter option responses expose the same statistics provider identity as the provider key, plus display labels, auth IDs, and auth positions where available. Selecting a provider label filters all matching provider indexes together; unlabeled providers remain filterable by auth index or raw provider key.
+Filter option responses expose the same statistics provider identity as the provider key, plus display labels, auth IDs, and auth positions where available. Selecting a provider label filters all matching provider indexes together through the `provider` query parameter; callers that need the original stored provider key can use `raw_provider`.

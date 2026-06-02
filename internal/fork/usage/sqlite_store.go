@@ -12,6 +12,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const usageRollupVersion = "2"
+
 type SQLiteStore struct {
 	db *sql.DB
 }
@@ -206,14 +208,25 @@ WHERE stats_provider_key = '' OR stats_provider_label = ''`); err != nil {
 }
 
 func (s *SQLiteStore) backfillUsageRollup(ctx context.Context) error {
-	var count int64
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_rollup_hourly").Scan(&count); err != nil {
-		return fmt.Errorf("count usage hourly rollup: %w", err)
+	var storedVersion string
+	errVersion := s.db.QueryRowContext(ctx, "SELECT value FROM usage_meta WHERE key = 'rollup_version'").Scan(&storedVersion)
+	if errVersion != nil && errVersion != sql.ErrNoRows {
+		return fmt.Errorf("read usage rollup version: %w", errVersion)
 	}
-	if count > 0 {
+	if storedVersion == usageRollupVersion {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `
+	tx, errBegin := s.db.BeginTx(ctx, nil)
+	if errBegin != nil {
+		return fmt.Errorf("begin usage hourly rollup rebuild: %w", errBegin)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM usage_rollup_hourly"); err != nil {
+		return fmt.Errorf("clear usage hourly rollup: %w", err)
+	}
+	_, err := tx.ExecContext(ctx, `
 INSERT INTO usage_rollup_hourly (
 	bucket_start, stats_provider_key, stats_provider_label, model, client_model, status,
 	requests, successful_requests, failed_requests, prompt_tokens, completion_tokens,
@@ -238,6 +251,14 @@ FROM usage_events
 GROUP BY bucket_start, stats_provider_key, stats_provider_label, model, client_model, status`)
 	if err != nil {
 		return fmt.Errorf("backfill usage hourly rollup: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO usage_meta(key, value) VALUES ('rollup_version', ?)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value`, usageRollupVersion); err != nil {
+		return fmt.Errorf("write usage rollup version: %w", err)
+	}
+	if errCommit := tx.Commit(); errCommit != nil {
+		return fmt.Errorf("commit usage hourly rollup rebuild: %w", errCommit)
 	}
 	return nil
 }
