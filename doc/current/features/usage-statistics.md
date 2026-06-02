@@ -45,6 +45,6 @@ Stream wrappers can mark a request-scoped failure override after an upstream str
 
 ## Provider Display Names
 
-Usage records use stable provider keys for filtering and human-readable provider labels for display. Built-in provider configs and OpenAI-compatible provider configs support optional labels. A `usage.provider-labels` map can override labels for providers that do not expose credential-specific names.
+Usage records keep stable provider keys, auth IDs, auth labels, and auth indexes on each raw event. Aggregated usage views use a statistics provider identity: non-empty provider labels are grouped as one provider, and records without a distinct label fall back to their auth index before the provider key. Built-in provider configs and OpenAI-compatible provider configs support optional labels. A `usage.provider-labels` map can override labels for providers that do not expose credential-specific names.
 
-Filter option responses include provider keys, display labels, auth IDs, and auth positions where available so the management panel can filter by either stable provider identity or user-facing label.
+Filter option responses expose the same statistics provider identity as the provider key, plus display labels, auth IDs, and auth positions where available. Selecting a provider label filters all matching provider indexes together; unlabeled providers remain filterable by auth index or raw provider key.

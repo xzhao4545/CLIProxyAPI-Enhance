@@ -88,12 +88,12 @@ func TestSQLiteStoreInsertQueryAndAggregate(t *testing.T) {
 		t.Fatalf("summary rows = %d, want 2", len(summary))
 	}
 	for _, row := range summary {
-		switch row.ProviderKey {
-		case "gemini":
+		switch row.ProviderLabel {
+		case "Gemini Primary":
 			if row.Requests != 1 || row.Successful != 1 || row.TotalTokens != 30 || row.SuccessRate != 1 {
 				t.Fatalf("gemini summary = %+v", row)
 			}
-		case "claude":
+		case "Claude Backup":
 			if row.Requests != 1 || row.Failed != 1 || row.TotalTokens != 3 || row.SuccessRate != 0 {
 				t.Fatalf("claude summary = %+v", row)
 			}
@@ -168,7 +168,7 @@ func TestSQLiteStoreMetricsAndFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryFilters() error = %v", err)
 	}
-	if len(options.Providers) != 1 || options.Providers[0].Key != "gemini" {
+	if len(options.Providers) != 1 || options.Providers[0].Key != "Gemini" {
 		t.Fatalf("providers = %+v", options.Providers)
 	}
 	requireContains(t, options.Models, "gemini-pro")
@@ -176,6 +176,130 @@ func TestSQLiteStoreMetricsAndFilters(t *testing.T) {
 	requireContains(t, options.AuthLabels, "Gemini Key")
 	requireContains(t, options.ErrorStages, "stream")
 	requireContains(t, options.ErrorCodes, "read_failed")
+}
+
+func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
+	store := openTestStore(t)
+	defer closeTestStore(t, store)
+
+	base := time.Date(2026, 5, 28, 13, 0, 0, 0, time.UTC)
+	events := []Event{
+		{
+			StartedAt:        base,
+			CompletedAt:      base,
+			ProviderKey:      "codex#1",
+			ProviderLabel:    "Shared Codex",
+			AuthID:           "auth-1",
+			AuthIndex:        "idx-1",
+			Model:            "gpt-5",
+			Status:           StatusSuccess,
+			PromptTokens:     1,
+			CompletionTokens: 9,
+			TotalTokens:      10,
+		},
+		{
+			StartedAt:        base.Add(time.Second),
+			CompletedAt:      base.Add(time.Second),
+			ProviderKey:      "codex#2",
+			ProviderLabel:    "Shared Codex",
+			AuthID:           "auth-2",
+			AuthIndex:        "idx-2",
+			Model:            "gpt-5",
+			Status:           StatusFailure,
+			ErrorStage:       "stream",
+			ErrorCode:        "keyword_filtered",
+			ErrorMessage:     "matched keyword",
+			PromptTokens:     2,
+			CompletionTokens: 18,
+			TotalTokens:      20,
+		},
+		{
+			StartedAt:        base.Add(2 * time.Second),
+			CompletedAt:      base.Add(2 * time.Second),
+			ProviderKey:      "codex",
+			ProviderLabel:    "codex",
+			AuthID:           "auth-3",
+			AuthIndex:        "idx-3",
+			Model:            "gpt-5",
+			Status:           StatusSuccess,
+			PromptTokens:     3,
+			CompletionTokens: 0,
+			TotalTokens:      3,
+		},
+		{
+			StartedAt:        base.Add(3 * time.Second),
+			CompletedAt:      base.Add(3 * time.Second),
+			ProviderKey:      "codex",
+			ProviderLabel:    "codex",
+			AuthID:           "auth-4",
+			AuthIndex:        "idx-4",
+			Model:            "gpt-5",
+			Status:           StatusSuccess,
+			PromptTokens:     4,
+			CompletionTokens: 0,
+			TotalTokens:      4,
+		},
+	}
+	for _, event := range events {
+		mustInsertEvent(t, store, event)
+	}
+
+	summary, err := store.QuerySummary(SummaryFilter{GroupBy: "provider"})
+	if err != nil {
+		t.Fatalf("QuerySummary() error = %v", err)
+	}
+	shared := requireSummaryProvider(t, summary, "Shared Codex")
+	if shared.ProviderLabel != "Shared Codex" || shared.Requests != 2 || shared.Successful != 1 || shared.Failed != 1 || shared.TotalTokens != 30 {
+		t.Fatalf("shared summary = %+v", shared)
+	}
+	idx3 := requireSummaryProvider(t, summary, "idx-3")
+	if idx3.ProviderLabel != "codex" || idx3.Requests != 1 || idx3.TotalTokens != 3 {
+		t.Fatalf("idx-3 summary = %+v", idx3)
+	}
+	idx4 := requireSummaryProvider(t, summary, "idx-4")
+	if idx4.ProviderLabel != "codex" || idx4.Requests != 1 || idx4.TotalTokens != 4 {
+		t.Fatalf("idx-4 summary = %+v", idx4)
+	}
+
+	metrics, err := store.QueryMetrics(QueryFilter{DateFrom: ptrTime(base.Add(-time.Second)), DateTo: ptrTime(base.Add(time.Minute))})
+	if err != nil {
+		t.Fatalf("QueryMetrics() error = %v", err)
+	}
+	sharedMetric := requireProviderMetric(t, metrics.ProviderRequestTotals, "Shared Codex")
+	if sharedMetric.ProviderLabel != "Shared Codex" || sharedMetric.Requests != 2 || sharedMetric.Successful != 1 || sharedMetric.Failed != 1 || sharedMetric.Tokens != 30 || sharedMetric.AuthID != "" {
+		t.Fatalf("shared metric = %+v", sharedMetric)
+	}
+
+	options, err := store.QueryFilters(QueryFilter{})
+	if err != nil {
+		t.Fatalf("QueryFilters() error = %v", err)
+	}
+	requireFilterOption(t, options.Providers, "Shared Codex", "Shared Codex", "")
+	requireFilterOption(t, options.Providers, "idx-3", "codex", "auth-3")
+	requireFilterOption(t, options.Providers, "idx-4", "codex", "auth-4")
+
+	page, err := store.QueryEvents(QueryFilter{Provider: "Shared Codex"})
+	if err != nil {
+		t.Fatalf("QueryEvents(provider label) error = %v", err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("provider label filter total = %d, want 2", page.Total)
+	}
+	page, err = store.QueryEvents(QueryFilter{Provider: "codex#1"})
+	if err != nil {
+		t.Fatalf("QueryEvents(provider key) error = %v", err)
+	}
+	if page.Total != 1 {
+		t.Fatalf("legacy provider key filter total = %d, want 1", page.Total)
+	}
+
+	failures, err := store.QueryFailures(QueryFilter{})
+	if err != nil {
+		t.Fatalf("QueryFailures() error = %v", err)
+	}
+	if len(failures) != 1 || failures[0].ProviderKey != "Shared Codex" || failures[0].Requests != 1 {
+		t.Fatalf("failures = %+v", failures)
+	}
 }
 
 func TestSanitizeProviderErrorTruncatesUTF8(t *testing.T) {
@@ -234,4 +358,39 @@ func requireContains(t *testing.T, values []string, want string) {
 		}
 	}
 	t.Fatalf("%q not found in %v", want, values)
+}
+
+func requireSummaryProvider(t *testing.T, rows []SummaryRow, key string) SummaryRow {
+	t.Helper()
+	for _, row := range rows {
+		if row.ProviderKey == key {
+			return row
+		}
+	}
+	t.Fatalf("provider summary %q not found in %+v", key, rows)
+	return SummaryRow{}
+}
+
+func requireProviderMetric(t *testing.T, rows []ProviderMetric, key string) ProviderMetric {
+	t.Helper()
+	for _, row := range rows {
+		if row.ProviderKey == key {
+			return row
+		}
+	}
+	t.Fatalf("provider metric %q not found in %+v", key, rows)
+	return ProviderMetric{}
+}
+
+func requireFilterOption(t *testing.T, rows []FilterOption, key, label, authID string) {
+	t.Helper()
+	for _, row := range rows {
+		if row.Key == key {
+			if row.Label != label || row.AuthID != authID {
+				t.Fatalf("filter option %q = %+v, want label %q auth %q", key, row, label, authID)
+			}
+			return
+		}
+	}
+	t.Fatalf("filter option %q not found in %+v", key, rows)
 }

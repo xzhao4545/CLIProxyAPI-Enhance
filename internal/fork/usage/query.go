@@ -138,25 +138,25 @@ func (s *SQLiteStore) QueryFailuresContext(ctx context.Context, filter QueryFilt
 	where, args := buildWhere(filter, false)
 	query := `
 WITH filtered_usage AS (
-	SELECT * FROM usage_events` + where + `
+	SELECT *, ` + providerStatsKeySQL() + ` AS provider_group_key, ` + providerStatsLabelSQL() + ` AS provider_group_label FROM usage_events` + where + `
 )
 SELECT
 	COALESCE(error_stage, ''),
 	COALESCE(error_code, ''),
-	provider_key,
-	provider_label,
+	provider_group_key,
+	provider_group_label,
 	model,
 	COUNT(*) AS requests,
 	COALESCE((SELECT e2.error_message FROM filtered_usage e2
 		WHERE e2.status = 'failure'
 		  AND COALESCE(e2.error_stage, '') = COALESCE(filtered_usage.error_stage, '')
 		  AND COALESCE(e2.error_code, '') = COALESCE(filtered_usage.error_code, '')
-		  AND e2.provider_key = filtered_usage.provider_key
+		  AND e2.provider_group_key = filtered_usage.provider_group_key
 		  AND e2.model = filtered_usage.model
 		ORDER BY e2.started_at DESC, e2.id DESC LIMIT 1), '') AS last_message,
 	MAX(started_at) AS last_seen_at
 FROM filtered_usage
-GROUP BY COALESCE(error_stage, ''), COALESCE(error_code, ''), provider_key, provider_label, model
+GROUP BY COALESCE(error_stage, ''), COALESCE(error_code, ''), provider_group_key, provider_group_label, model
 ORDER BY requests DESC, last_seen_at DESC`
 	rows, errQuery := s.db.QueryContext(ctx, query, args...)
 	if errQuery != nil {
@@ -317,12 +317,12 @@ func normalizeQueryFilter(filter QueryFilter) QueryFilter {
 func buildWhere(filter QueryFilter, includePagination bool) (string, []any) {
 	var parts []string
 	args := make([]any, 0, 12)
-	add := func(expr string, value any) {
+	add := func(expr string, values ...any) {
 		parts = append(parts, expr)
-		args = append(args, value)
+		args = append(args, values...)
 	}
 	if filter.Provider != "" {
-		add("provider_key = ?", filter.Provider)
+		add("("+providerStatsKeySQL()+" = ? OR provider_key = ?)", filter.Provider, filter.Provider)
 	}
 	if filter.ProviderLabel != "" {
 		add("provider_label = ?", filter.ProviderLabel)
@@ -421,11 +421,11 @@ func summaryGroupSQL(groupBy string) (selectPrefix, groupExpr, orderExpr string,
 	case "day":
 		return "SELECT strftime('%Y-%m-%d', started_at / 1000, 'unixepoch') AS day, ", " GROUP BY day", " ORDER BY day ASC", nil
 	case "provider":
-		return "SELECT provider_key, provider_label, ", " GROUP BY provider_key, provider_label", " ORDER BY requests DESC", nil
+		return "SELECT " + providerStatsKeySQL() + " AS provider_key, " + providerStatsLabelSQL() + " AS provider_label, ", " GROUP BY 1, 2", " ORDER BY requests DESC", nil
 	case "model":
 		return "SELECT model, ", " GROUP BY model", " ORDER BY requests DESC", nil
 	case "provider_model":
-		return "SELECT provider_key, provider_label, model, ", " GROUP BY provider_key, provider_label, model", " ORDER BY requests DESC", nil
+		return "SELECT " + providerStatsKeySQL() + " AS provider_key, " + providerStatsLabelSQL() + " AS provider_label, model, ", " GROUP BY 1, 2, 3", " ORDER BY requests DESC", nil
 	case "status":
 		return "SELECT status, ", " GROUP BY status", " ORDER BY requests DESC", nil
 	default:
@@ -504,13 +504,15 @@ func isAllowedDistinctColumn(column string) bool {
 }
 
 func (s *SQLiteStore) distinctProviders(ctx context.Context, where string, args []any) ([]FilterOption, error) {
-	query := "SELECT provider_key, provider_label, COALESCE(auth_id, '') FROM usage_events"
+	query := "SELECT " + providerStatsKeySQL() + " AS provider_key, " +
+		providerStatsLabelSQL() + " AS provider_label, " +
+		"CASE WHEN COUNT(DISTINCT COALESCE(auth_id, '')) = 1 THEN COALESCE(MAX(auth_id), '') ELSE '' END AS auth_id FROM usage_events"
 	if where == "" {
-		query += " WHERE provider_key != ''"
+		query += " WHERE " + providerStatsKeySQL() + " != ''"
 	} else {
-		query += where + " AND provider_key != ''"
+		query += where + " AND " + providerStatsKeySQL() + " != ''"
 	}
-	query += " GROUP BY provider_key, provider_label, auth_id ORDER BY provider_label, provider_key"
+	query += " GROUP BY 1, 2 ORDER BY provider_label, provider_key"
 	rows, errQuery := s.db.QueryContext(ctx, query, args...)
 	if errQuery != nil {
 		return nil, fmt.Errorf("query distinct usage providers: %w", errQuery)
@@ -529,11 +531,14 @@ func (s *SQLiteStore) distinctProviders(ctx context.Context, where string, args 
 
 func (s *SQLiteStore) queryProviderMetrics(ctx context.Context, where string, args []any) ([]ProviderMetric, error) {
 	rows, errQuery := s.db.QueryContext(ctx, `
-SELECT provider_key, provider_label, auth_id, COUNT(*) AS requests,
+SELECT `+providerStatsKeySQL()+` AS provider_key,
+	`+providerStatsLabelSQL()+` AS provider_label,
+	CASE WHEN COUNT(DISTINCT COALESCE(auth_id, '')) = 1 THEN COALESCE(MAX(auth_id), '') ELSE '' END AS auth_id,
+	COUNT(*) AS requests,
 	SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successful,
 	COALESCE(SUM(total_tokens), 0) AS tokens
 FROM usage_events`+where+`
-GROUP BY provider_key, provider_label, auth_id
+GROUP BY 1, 2
 ORDER BY requests DESC`, args...)
 	if errQuery != nil {
 		return nil, fmt.Errorf("query usage provider metrics: %w", errQuery)
@@ -550,6 +555,14 @@ ORDER BY requests DESC`, args...)
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func providerStatsKeySQL() string {
+	return "CASE WHEN NULLIF(TRIM(provider_label), '') IS NOT NULL AND TRIM(provider_label) != TRIM(provider_key) THEN TRIM(provider_label) ELSE COALESCE(NULLIF(TRIM(auth_index), ''), TRIM(provider_key)) END"
+}
+
+func providerStatsLabelSQL() string {
+	return "CASE WHEN NULLIF(TRIM(provider_label), '') IS NOT NULL THEN TRIM(provider_label) ELSE TRIM(provider_key) END"
 }
 
 func (s *SQLiteStore) queryModelMetrics(ctx context.Context, where string, args []any) ([]ModelMetric, error) {
