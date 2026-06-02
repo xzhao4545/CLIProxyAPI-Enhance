@@ -100,6 +100,15 @@ func (s *SQLiteStore) QuerySummaryContext(ctx context.Context, filter SummaryFil
 	if errGroup != nil {
 		return nil, errGroup
 	}
+	if canUseUsageRollup(filter.QueryFilter) {
+		rows, errRollup := s.querySummaryRollup(ctx, filter.QueryFilter, groupBy)
+		if errRollup != nil {
+			return nil, errRollup
+		}
+		if filter.Provider == "" || len(rows) > 0 {
+			return rows, nil
+		}
+	}
 	where, args := buildWhere(filter.QueryFilter, false)
 	query := selectPrefix + summaryAggregateSQL() + " FROM usage_events" + where + groupExpr + orderExpr
 	rows, errQuery := s.db.QueryContext(ctx, query, args...)
@@ -245,8 +254,6 @@ func (s *SQLiteStore) QueryMetricsContext(ctx context.Context, filter QueryFilte
 		t := filter.DateTo.Add(-defaultMetricsWindow)
 		filter.DateFrom = &t
 	}
-	where, args := buildWhere(filter, false)
-
 	var m Metrics
 	m.WindowFrom = filter.DateFrom.UTC()
 	m.WindowTo = filter.DateTo.UTC()
@@ -255,6 +262,17 @@ func (s *SQLiteStore) QueryMetricsContext(ctx context.Context, filter QueryFilte
 		minutes = 1
 	}
 	m.WindowMinutes = minutes
+	if canUseUsageRollup(filter) {
+		metrics, errRollup := s.queryMetricsRollup(ctx, filter, m)
+		if errRollup != nil {
+			return Metrics{}, errRollup
+		}
+		if filter.Provider == "" || metrics.TotalRequests > 0 {
+			return metrics, nil
+		}
+	}
+
+	where, args := buildWhere(filter, false)
 
 	row := s.db.QueryRowContext(ctx, `
 SELECT COUNT(*),
@@ -363,6 +381,40 @@ func buildWhere(filter QueryFilter, includePagination bool) (string, []any) {
 	return " WHERE " + strings.Join(parts, " AND "), args
 }
 
+func buildRollupWhere(filter QueryFilter) (string, []any) {
+	var parts []string
+	args := make([]any, 0, 8)
+	add := func(expr string, value any) {
+		parts = append(parts, expr)
+		args = append(args, value)
+	}
+	if filter.Provider != "" {
+		add("stats_provider_key = ?", filter.Provider)
+	}
+	if filter.ProviderLabel != "" {
+		add("stats_provider_label = ?", filter.ProviderLabel)
+	}
+	if filter.Model != "" {
+		add("model = ?", filter.Model)
+	}
+	if filter.ClientModel != "" {
+		add("client_model = ?", filter.ClientModel)
+	}
+	if filter.Status != "" {
+		add("status = ?", filter.Status)
+	}
+	if filter.DateFrom != nil {
+		add("bucket_start >= ?", filter.DateFrom.UTC().UnixMilli())
+	}
+	if filter.DateTo != nil {
+		add("bucket_start < ?", filter.DateTo.UTC().UnixMilli())
+	}
+	if len(parts) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(parts, " AND "), args
+}
+
 func eventSelectFields(includeRaw bool) string {
 	raw := "'' AS provider_error_raw"
 	if includeRaw {
@@ -433,6 +485,23 @@ func summaryGroupSQL(groupBy string) (selectPrefix, groupExpr, orderExpr string,
 	}
 }
 
+func summaryGroupRollupSQL(groupBy string) (selectPrefix, groupExpr, orderExpr string, err error) {
+	switch groupBy {
+	case "day":
+		return "SELECT strftime('%Y-%m-%d', bucket_start / 1000, 'unixepoch') AS day, ", " GROUP BY day", " ORDER BY day ASC", nil
+	case "provider":
+		return "SELECT stats_provider_key AS provider_key, stats_provider_label AS provider_label, ", " GROUP BY 1, 2", " ORDER BY requests DESC", nil
+	case "model":
+		return "SELECT model, ", " GROUP BY model", " ORDER BY requests DESC", nil
+	case "provider_model":
+		return "SELECT stats_provider_key AS provider_key, stats_provider_label AS provider_label, model, ", " GROUP BY 1, 2, 3", " ORDER BY requests DESC", nil
+	case "status":
+		return "SELECT status, ", " GROUP BY status", " ORDER BY requests DESC", nil
+	default:
+		return "", "", "", fmt.Errorf("invalid group_by %q", groupBy)
+	}
+}
+
 func summaryAggregateSQL() string {
 	return `COUNT(*) AS requests,
 SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successful,
@@ -442,6 +511,43 @@ COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
 COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
 COALESCE(SUM(total_tokens), 0) AS total_tokens`
+}
+
+func summaryAggregateRollupSQL() string {
+	return `COALESCE(SUM(requests), 0) AS requests,
+COALESCE(SUM(successful_requests), 0) AS successful,
+COALESCE(SUM(failed_requests), 0) AS failed,
+COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+COALESCE(SUM(total_tokens), 0) AS total_tokens`
+}
+
+func (s *SQLiteStore) querySummaryRollup(ctx context.Context, filter QueryFilter, groupBy string) ([]SummaryRow, error) {
+	selectPrefix, groupExpr, orderExpr, errGroup := summaryGroupRollupSQL(groupBy)
+	if errGroup != nil {
+		return nil, errGroup
+	}
+	where, args := buildRollupWhere(filter)
+	query := selectPrefix + summaryAggregateRollupSQL() + " FROM usage_rollup_hourly" + where + groupExpr + orderExpr
+	rows, errQuery := s.db.QueryContext(ctx, query, args...)
+	if errQuery != nil {
+		return nil, fmt.Errorf("query usage summary rollup: %w", errQuery)
+	}
+	defer rows.Close()
+	var out []SummaryRow
+	for rows.Next() {
+		row, errScan := scanSummaryRow(rows, groupBy)
+		if errScan != nil {
+			return nil, errScan
+		}
+		out = append(out, row)
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return nil, fmt.Errorf("iterate usage summary rollup: %w", errRows)
+	}
+	return out, nil
 }
 
 func scanSummaryRow(rows *sql.Rows, groupBy string) (SummaryRow, error) {
@@ -558,10 +664,18 @@ ORDER BY requests DESC`, args...)
 }
 
 func providerStatsKeySQL() string {
-	return "CASE WHEN NULLIF(TRIM(provider_label), '') IS NOT NULL AND TRIM(provider_label) != TRIM(provider_key) THEN TRIM(provider_label) ELSE COALESCE(NULLIF(TRIM(auth_index), ''), TRIM(provider_key)) END"
+	return "COALESCE(NULLIF(TRIM(stats_provider_key), ''), " + providerStatsFallbackKeySQL() + ")"
 }
 
 func providerStatsLabelSQL() string {
+	return "COALESCE(NULLIF(TRIM(stats_provider_label), ''), " + providerStatsFallbackLabelSQL() + ")"
+}
+
+func providerStatsFallbackKeySQL() string {
+	return "CASE WHEN NULLIF(TRIM(provider_label), '') IS NOT NULL AND TRIM(provider_label) != TRIM(provider_key) THEN TRIM(provider_label) ELSE COALESCE(NULLIF(TRIM(auth_index), ''), TRIM(provider_key)) END"
+}
+
+func providerStatsFallbackLabelSQL() string {
 	return "CASE WHEN NULLIF(TRIM(provider_label), '') IS NOT NULL THEN TRIM(provider_label) ELSE TRIM(provider_key) END"
 }
 
@@ -584,6 +698,103 @@ ORDER BY requests DESC`, args...)
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *SQLiteStore) queryMetricsRollup(ctx context.Context, filter QueryFilter, base Metrics) (Metrics, error) {
+	where, args := buildRollupWhere(filter)
+	row := s.db.QueryRowContext(ctx, `
+SELECT COALESCE(SUM(requests), 0),
+	COALESCE(SUM(successful_requests), 0),
+	COALESCE(SUM(failed_requests), 0),
+	COALESCE(SUM(prompt_tokens), 0),
+	COALESCE(SUM(completion_tokens), 0),
+	COALESCE(SUM(reasoning_tokens), 0),
+	COALESCE(SUM(cached_tokens), 0),
+	COALESCE(SUM(total_tokens), 0)
+FROM usage_rollup_hourly`+where, args...)
+	m := base
+	if err := row.Scan(&m.TotalRequests, &m.SuccessfulRequests, &m.FailedRequests, &m.TotalPromptTokens, &m.TotalCompletionTokens, &m.TotalReasoningTokens, &m.TotalCachedTokens, &m.TotalTokens); err != nil {
+		return Metrics{}, fmt.Errorf("query usage metrics rollup totals: %w", err)
+	}
+	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
+	m.RPM = float64(m.TotalRequests) / m.WindowMinutes
+	m.TPM = float64(m.TotalTokens) / m.WindowMinutes
+
+	providers, errProviders := s.queryProviderMetricsRollup(ctx, where, args)
+	if errProviders != nil {
+		return Metrics{}, errProviders
+	}
+	m.ProviderSuccessRates = providers
+	m.ProviderRequestTotals = providers
+	m.ProviderTokenTotals = providers
+	models, errModels := s.queryModelMetricsRollup(ctx, where, args)
+	if errModels != nil {
+		return Metrics{}, errModels
+	}
+	m.ModelRequestTotals = models
+	m.ModelTokenTotals = models
+	return m, nil
+}
+
+func (s *SQLiteStore) queryProviderMetricsRollup(ctx context.Context, where string, args []any) ([]ProviderMetric, error) {
+	rows, errQuery := s.db.QueryContext(ctx, `
+SELECT stats_provider_key, stats_provider_label,
+	COALESCE(SUM(requests), 0) AS requests,
+	COALESCE(SUM(successful_requests), 0) AS successful,
+	COALESCE(SUM(total_tokens), 0) AS tokens
+FROM usage_rollup_hourly`+where+`
+GROUP BY stats_provider_key, stats_provider_label
+ORDER BY requests DESC`, args...)
+	if errQuery != nil {
+		return nil, fmt.Errorf("query usage provider metrics rollup: %w", errQuery)
+	}
+	defer rows.Close()
+	var out []ProviderMetric
+	for rows.Next() {
+		var item ProviderMetric
+		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.Requests, &item.Successful, &item.Tokens); err != nil {
+			return nil, fmt.Errorf("scan usage provider metrics rollup: %w", err)
+		}
+		item.Failed = item.Requests - item.Successful
+		item.SuccessRate = successRate(item.Successful, item.Requests)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) queryModelMetricsRollup(ctx context.Context, where string, args []any) ([]ModelMetric, error) {
+	rows, errQuery := s.db.QueryContext(ctx, `
+SELECT model, COALESCE(SUM(requests), 0) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+FROM usage_rollup_hourly`+where+`
+GROUP BY model
+ORDER BY requests DESC`, args...)
+	if errQuery != nil {
+		return nil, fmt.Errorf("query usage model metrics rollup: %w", errQuery)
+	}
+	defer rows.Close()
+	var out []ModelMetric
+	for rows.Next() {
+		var item ModelMetric
+		if err := rows.Scan(&item.Model, &item.Requests, &item.Tokens); err != nil {
+			return nil, fmt.Errorf("scan usage model metrics rollup: %w", err)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func canUseUsageRollup(filter QueryFilter) bool {
+	if filter.ErrorStage != "" || filter.ErrorCode != "" || filter.AuthID != "" || filter.AuthLabel != "" || filter.ClientKeyHash != "" {
+		return false
+	}
+	return isHourBoundary(filter.DateFrom) && isHourBoundary(filter.DateTo)
+}
+
+func isHourBoundary(value *time.Time) bool {
+	if value == nil {
+		return true
+	}
+	return value.UTC().Equal(value.UTC().Truncate(time.Hour))
 }
 
 func parseTimeQuery(value string) (*time.Time, error) {

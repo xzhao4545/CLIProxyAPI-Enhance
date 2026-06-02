@@ -19,7 +19,9 @@ Persistent events include:
 
 ## SQLite Store
 
-The SQLite store creates an append-only `usage_events` table with indexes for filtering and aggregation. It enables WAL mode and busy timeout behavior. Usage writes are best effort and should not fail proxied requests.
+The SQLite store creates an append-only `usage_events` table with indexes for filtering and aggregation. Each raw event stores both the original provider fields and the statistics provider identity fields used by aggregate queries. The store enables WAL mode and busy timeout behavior. Usage writes are best effort and should not fail proxied requests.
+
+The store also maintains an hourly `usage_rollup_hourly` table. Each inserted usage event updates the matching hourly bucket in the same SQLite transaction as the raw event insert. Existing databases backfill statistics provider identity fields on startup, and an empty hourly rollup table is populated from existing raw events. Aggregate queries use the hourly rollup when their filters can be represented exactly by the rollup dimensions and the requested time bounds align to whole hours; otherwise they fall back to `usage_events` to preserve exact results. Recent request lists and failure-detail queries continue to read raw events.
 
 Relative `usage.sqlite-path` values resolve beside the active config file. The default file name is `usage.sqlite3`.
 
@@ -45,6 +47,6 @@ Stream wrappers can mark a request-scoped failure override after an upstream str
 
 ## Provider Display Names
 
-Usage records keep stable provider keys, auth IDs, auth labels, and auth indexes on each raw event. Aggregated usage views use a statistics provider identity: non-empty provider labels are grouped as one provider, and records without a distinct label fall back to their auth index before the provider key. Built-in provider configs and OpenAI-compatible provider configs support optional labels. A `usage.provider-labels` map can override labels for providers that do not expose credential-specific names.
+Usage records keep stable provider keys, auth IDs, auth labels, and auth indexes on each raw event. Aggregated usage views use the persisted statistics provider identity: non-empty provider labels are grouped as one provider, and records without a distinct label fall back to their auth index before the provider key. Built-in provider configs and OpenAI-compatible provider configs support optional labels. A `usage.provider-labels` map can override labels for providers that do not expose credential-specific names.
 
 Filter option responses expose the same statistics provider identity as the provider key, plus display labels, auth IDs, and auth positions where available. Selecting a provider label filters all matching provider indexes together; unlabeled providers remain filterable by auth index or raw provider key.

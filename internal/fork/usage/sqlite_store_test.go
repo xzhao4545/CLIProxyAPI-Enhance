@@ -2,7 +2,9 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -269,6 +271,23 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 	if sharedMetric.ProviderLabel != "Shared Codex" || sharedMetric.Requests != 2 || sharedMetric.Successful != 1 || sharedMetric.Failed != 1 || sharedMetric.Tokens != 30 || sharedMetric.AuthID != "" {
 		t.Fatalf("shared metric = %+v", sharedMetric)
 	}
+	rollupMetrics, err := store.QueryMetrics(QueryFilter{DateFrom: ptrTime(base), DateTo: ptrTime(base.Add(time.Hour))})
+	if err != nil {
+		t.Fatalf("QueryMetrics(rollup range) error = %v", err)
+	}
+	if rollupMetrics.TotalRequests != 4 || rollupMetrics.SuccessfulRequests != 3 || rollupMetrics.FailedRequests != 1 || rollupMetrics.TotalTokens != 37 {
+		t.Fatalf("rollup metrics = %+v", rollupMetrics)
+	}
+	if metric := requireProviderMetric(t, rollupMetrics.ProviderRequestTotals, "Shared Codex"); metric.Requests != 2 || metric.Tokens != 30 {
+		t.Fatalf("shared rollup metric = %+v", metric)
+	}
+	var rollupRows int
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM usage_rollup_hourly").Scan(&rollupRows); err != nil {
+		t.Fatalf("count usage_rollup_hourly error = %v", err)
+	}
+	if rollupRows != 4 {
+		t.Fatalf("rollup rows = %d, want 4", rollupRows)
+	}
 
 	options, err := store.QueryFilters(QueryFilter{})
 	if err != nil {
@@ -299,6 +318,87 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 	}
 	if len(failures) != 1 || failures[0].ProviderKey != "Shared Codex" || failures[0].Requests != 1 {
 		t.Fatalf("failures = %+v", failures)
+	}
+}
+
+func TestSQLiteStoreBackfillsProviderStatsAndRollup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open old sqlite error = %v", err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE usage_events (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	request_id TEXT,
+	started_at INTEGER NOT NULL,
+	completed_at INTEGER NOT NULL,
+	duration_ms INTEGER NOT NULL,
+	provider_key TEXT NOT NULL,
+	provider_label TEXT NOT NULL,
+	auth_id TEXT,
+	auth_label TEXT,
+	auth_index TEXT,
+	model TEXT NOT NULL,
+	client_model TEXT,
+	route TEXT,
+	status TEXT NOT NULL,
+	http_status INTEGER,
+	upstream_status INTEGER,
+	prompt_tokens INTEGER NOT NULL DEFAULT 0,
+	completion_tokens INTEGER NOT NULL DEFAULT 0,
+	total_tokens INTEGER NOT NULL DEFAULT 0,
+	reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+	cached_tokens INTEGER NOT NULL DEFAULT 0,
+	client_key_hash TEXT,
+	error_stage TEXT,
+	error_code TEXT,
+	error_message TEXT,
+	provider_error_raw TEXT,
+	metadata_json TEXT
+);
+INSERT INTO usage_events (
+	started_at, completed_at, duration_ms, provider_key, provider_label, auth_id,
+	auth_index, model, client_model, status, prompt_tokens, completion_tokens, total_tokens
+) VALUES
+	(1780300800000, 1780300800000, 0, 'codex#1', 'Shared Codex', 'auth-1', 'idx-1', 'gpt-5', '', 'success', 1, 9, 10),
+	(1780300860000, 1780300860000, 0, 'codex#2', 'Shared Codex', 'auth-2', 'idx-2', 'gpt-5', '', 'failure', 2, 18, 20);
+`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("seed old sqlite error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close old sqlite error = %v", err)
+	}
+
+	store, err := OpenSQLiteStore(context.Background(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore(existing) error = %v", err)
+	}
+	defer closeTestStore(t, store)
+
+	var statsProviderKey string
+	if err := store.db.QueryRowContext(context.Background(), "SELECT stats_provider_key FROM usage_events ORDER BY id LIMIT 1").Scan(&statsProviderKey); err != nil {
+		t.Fatalf("query backfilled stats_provider_key error = %v", err)
+	}
+	if statsProviderKey != "Shared Codex" {
+		t.Fatalf("statsProviderKey = %q, want Shared Codex", statsProviderKey)
+	}
+	var rollupRequests, rollupTokens int64
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(total_tokens), 0) FROM usage_rollup_hourly").Scan(&rollupRequests, &rollupTokens); err != nil {
+		t.Fatalf("query rollup totals error = %v", err)
+	}
+	if rollupRequests != 2 || rollupTokens != 30 {
+		t.Fatalf("rollup requests=%d tokens=%d, want 2/30", rollupRequests, rollupTokens)
+	}
+	summary, err := store.QuerySummary(SummaryFilter{GroupBy: "provider"})
+	if err != nil {
+		t.Fatalf("QuerySummary(backfilled) error = %v", err)
+	}
+	shared := requireSummaryProvider(t, summary, "Shared Codex")
+	if shared.Requests != 2 || shared.TotalTokens != 30 {
+		t.Fatalf("backfilled summary = %+v", shared)
 	}
 }
 
