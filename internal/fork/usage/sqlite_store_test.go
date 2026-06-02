@@ -402,6 +402,78 @@ INSERT INTO usage_events (
 	}
 }
 
+func TestSQLiteStoreMixedRollupRangeMatchesExpectedTotals(t *testing.T) {
+	store := openTestStore(t)
+	defer closeTestStore(t, store)
+
+	base := time.Date(2026, 5, 28, 13, 0, 0, 0, time.UTC)
+	for _, event := range []Event{
+		{
+			StartedAt:        base.Add(10 * time.Minute),
+			CompletedAt:      base.Add(10 * time.Minute),
+			ProviderKey:      "codex#1",
+			ProviderLabel:    "Shared Codex",
+			AuthID:           "auth-1",
+			AuthIndex:        "idx-1",
+			Model:            "gpt-5",
+			Status:           StatusSuccess,
+			PromptTokens:     1,
+			CompletionTokens: 9,
+			TotalTokens:      10,
+		},
+		{
+			StartedAt:        base.Add(time.Hour + 10*time.Minute),
+			CompletedAt:      base.Add(time.Hour + 10*time.Minute),
+			ProviderKey:      "codex#2",
+			ProviderLabel:    "Shared Codex",
+			AuthID:           "auth-2",
+			AuthIndex:        "idx-2",
+			Model:            "gpt-5",
+			Status:           StatusFailure,
+			PromptTokens:     2,
+			CompletionTokens: 18,
+			TotalTokens:      20,
+		},
+		{
+			StartedAt:        base.Add(2*time.Hour + 10*time.Minute),
+			CompletedAt:      base.Add(2*time.Hour + 10*time.Minute),
+			ProviderKey:      "codex#3",
+			ProviderLabel:    "Shared Codex",
+			AuthID:           "auth-3",
+			AuthIndex:        "idx-3",
+			Model:            "gpt-5",
+			Status:           StatusSuccess,
+			PromptTokens:     3,
+			CompletionTokens: 27,
+			TotalTokens:      30,
+		},
+	} {
+		mustInsertEvent(t, store, event)
+	}
+
+	from := base.Add(5 * time.Minute)
+	to := base.Add(2*time.Hour + 20*time.Minute)
+	metrics, err := store.QueryMetrics(QueryFilter{DateFrom: &from, DateTo: &to})
+	if err != nil {
+		t.Fatalf("QueryMetrics(mixed) error = %v", err)
+	}
+	if metrics.TotalRequests != 3 || metrics.SuccessfulRequests != 2 || metrics.FailedRequests != 1 || metrics.TotalTokens != 60 {
+		t.Fatalf("mixed metrics = %+v", metrics)
+	}
+	sharedMetric := requireProviderMetric(t, metrics.ProviderRequestTotals, "Shared Codex")
+	if sharedMetric.Requests != 3 || sharedMetric.Successful != 2 || sharedMetric.Failed != 1 || sharedMetric.Tokens != 60 {
+		t.Fatalf("mixed provider metric = %+v", sharedMetric)
+	}
+	summary, err := store.QuerySummary(SummaryFilter{QueryFilter: QueryFilter{DateFrom: &from, DateTo: &to}, GroupBy: "provider"})
+	if err != nil {
+		t.Fatalf("QuerySummary(mixed) error = %v", err)
+	}
+	sharedSummary := requireSummaryProvider(t, summary, "Shared Codex")
+	if sharedSummary.Requests != 3 || sharedSummary.Successful != 2 || sharedSummary.Failed != 1 || sharedSummary.TotalTokens != 60 {
+		t.Fatalf("mixed summary = %+v", sharedSummary)
+	}
+}
+
 func TestSanitizeProviderErrorTruncatesUTF8(t *testing.T) {
 	message, raw := sanitizeProviderError("hello\n世界\tsecret", 10)
 	if !strings.HasPrefix(raw, "hello") {

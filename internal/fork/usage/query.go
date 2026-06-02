@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -100,16 +101,20 @@ func (s *SQLiteStore) QuerySummaryContext(ctx context.Context, filter SummaryFil
 	if errGroup != nil {
 		return nil, errGroup
 	}
-	if canUseUsageRollup(filter.QueryFilter) {
-		rows, errRollup := s.querySummaryRollup(ctx, filter.QueryFilter, groupBy)
-		if errRollup != nil {
-			return nil, errRollup
+	if plan, ok := buildUsageRollupPlan(filter.QueryFilter); ok {
+		rows, errMixed := s.querySummaryMixed(ctx, filter.QueryFilter, groupBy, plan)
+		if errMixed != nil {
+			return nil, errMixed
 		}
 		if filter.Provider == "" || len(rows) > 0 {
 			return rows, nil
 		}
 	}
-	where, args := buildWhere(filter.QueryFilter, false)
+	return s.querySummaryRaw(ctx, filter.QueryFilter, groupBy, selectPrefix, groupExpr, orderExpr)
+}
+
+func (s *SQLiteStore) querySummaryRaw(ctx context.Context, filter QueryFilter, groupBy, selectPrefix, groupExpr, orderExpr string) ([]SummaryRow, error) {
+	where, args := buildWhere(filter, false)
 	query := selectPrefix + summaryAggregateSQL() + " FROM usage_events" + where + groupExpr + orderExpr
 	rows, errQuery := s.db.QueryContext(ctx, query, args...)
 	if errQuery != nil {
@@ -262,16 +267,19 @@ func (s *SQLiteStore) QueryMetricsContext(ctx context.Context, filter QueryFilte
 		minutes = 1
 	}
 	m.WindowMinutes = minutes
-	if canUseUsageRollup(filter) {
-		metrics, errRollup := s.queryMetricsRollup(ctx, filter, m)
-		if errRollup != nil {
-			return Metrics{}, errRollup
+	if plan, ok := buildUsageRollupPlan(filter); ok {
+		metrics, errMixed := s.queryMetricsMixed(ctx, filter, m, plan)
+		if errMixed != nil {
+			return Metrics{}, errMixed
 		}
 		if filter.Provider == "" || metrics.TotalRequests > 0 {
 			return metrics, nil
 		}
 	}
+	return s.queryMetricsRaw(ctx, filter, m)
+}
 
+func (s *SQLiteStore) queryMetricsRaw(ctx context.Context, filter QueryFilter, m Metrics) (Metrics, error) {
 	where, args := buildWhere(filter, false)
 
 	row := s.db.QueryRowContext(ctx, `
@@ -288,8 +296,8 @@ FROM usage_events`+where, args...)
 		return Metrics{}, fmt.Errorf("query usage metrics totals: %w", err)
 	}
 	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
-	m.RPM = float64(m.TotalRequests) / minutes
-	m.TPM = float64(m.TotalTokens) / minutes
+	m.RPM = float64(m.TotalRequests) / m.WindowMinutes
+	m.TPM = float64(m.TotalTokens) / m.WindowMinutes
 
 	providers, errProviders := s.queryProviderMetrics(ctx, where, args)
 	if errProviders != nil {
@@ -550,6 +558,176 @@ func (s *SQLiteStore) querySummaryRollup(ctx context.Context, filter QueryFilter
 	return out, nil
 }
 
+type usageRollupPlan struct {
+	fullHours *QueryFilter
+	partials  []QueryFilter
+}
+
+func buildUsageRollupPlan(filter QueryFilter) (usageRollupPlan, bool) {
+	if !isUsageRollupCompatible(filter) {
+		return usageRollupPlan{}, false
+	}
+	var plan usageRollupPlan
+	from := filter.DateFrom
+	to := filter.DateTo
+	fullFrom := from
+	fullTo := to
+	if from != nil {
+		ceil := ceilHour(*from)
+		fullFrom = &ceil
+		if from.Before(ceil) {
+			headTo := ceil
+			if to != nil && to.Before(headTo) {
+				headTo = *to
+			}
+			if from.Before(headTo) {
+				head := filter
+				head.DateFrom = from
+				head.DateTo = &headTo
+				plan.partials = append(plan.partials, head)
+			}
+		}
+	}
+	if to != nil {
+		floor := to.UTC().Truncate(time.Hour)
+		fullTo = &floor
+		if floor.Before(*to) {
+			tailFrom := floor
+			if from != nil && tailFrom.Before(*from) {
+				tailFrom = *from
+			}
+			if tailFrom.Before(*to) && !partialCovered(plan.partials, tailFrom, *to) {
+				tail := filter
+				tail.DateFrom = &tailFrom
+				tail.DateTo = to
+				plan.partials = append(plan.partials, tail)
+			}
+		}
+	}
+	if fullFrom == nil || fullTo == nil || fullFrom.Before(*fullTo) {
+		full := filter
+		full.DateFrom = fullFrom
+		full.DateTo = fullTo
+		plan.fullHours = &full
+	}
+	if plan.fullHours == nil && len(plan.partials) == 0 {
+		return usageRollupPlan{}, false
+	}
+	return plan, true
+}
+
+func partialCovered(partials []QueryFilter, from, to time.Time) bool {
+	for _, partial := range partials {
+		if partial.DateFrom == nil || partial.DateTo == nil {
+			continue
+		}
+		if partial.DateFrom.Equal(from) && partial.DateTo.Equal(to) {
+			return true
+		}
+	}
+	return false
+}
+
+func ceilHour(value time.Time) time.Time {
+	value = value.UTC()
+	floor := value.Truncate(time.Hour)
+	if value.Equal(floor) {
+		return floor
+	}
+	return floor.Add(time.Hour)
+}
+
+func (s *SQLiteStore) querySummaryMixed(ctx context.Context, original QueryFilter, groupBy string, plan usageRollupPlan) ([]SummaryRow, error) {
+	selectPrefix, groupExpr, orderExpr, errGroup := summaryGroupSQL(groupBy)
+	if errGroup != nil {
+		return nil, errGroup
+	}
+	var combined []SummaryRow
+	if plan.fullHours != nil {
+		rows, errRollup := s.querySummaryRollup(ctx, *plan.fullHours, groupBy)
+		if errRollup != nil {
+			return nil, errRollup
+		}
+		combined = append(combined, rows...)
+	}
+	for _, partial := range plan.partials {
+		rows, errRaw := s.querySummaryRaw(ctx, partial, groupBy, selectPrefix, groupExpr, orderExpr)
+		if errRaw != nil {
+			return nil, errRaw
+		}
+		combined = append(combined, rows...)
+	}
+	rows := mergeSummaryRows(groupBy, combined)
+	sortSummaryRows(groupBy, rows)
+	if original.Provider != "" && len(rows) == 0 {
+		return nil, nil
+	}
+	return rows, nil
+}
+
+func mergeSummaryRows(groupBy string, rows []SummaryRow) []SummaryRow {
+	merged := make(map[string]*SummaryRow, len(rows))
+	order := make([]string, 0, len(rows))
+	for _, row := range rows {
+		key := summaryMergeKey(groupBy, row)
+		target := merged[key]
+		if target == nil {
+			copyRow := row
+			copyRow.SuccessRate = 0
+			target = &copyRow
+			merged[key] = target
+			order = append(order, key)
+			continue
+		}
+		target.Requests += row.Requests
+		target.Successful += row.Successful
+		target.Failed += row.Failed
+		target.PromptTokens += row.PromptTokens
+		target.CompletionTokens += row.CompletionTokens
+		target.ReasoningTokens += row.ReasoningTokens
+		target.CachedTokens += row.CachedTokens
+		target.TotalTokens += row.TotalTokens
+	}
+	out := make([]SummaryRow, 0, len(order))
+	for _, key := range order {
+		row := *merged[key]
+		row.SuccessRate = successRate(row.Successful, row.Requests)
+		out = append(out, row)
+	}
+	return out
+}
+
+func summaryMergeKey(groupBy string, row SummaryRow) string {
+	switch groupBy {
+	case "day":
+		return row.Day
+	case "provider":
+		return row.ProviderKey + "\x00" + row.ProviderLabel
+	case "model":
+		return row.Model
+	case "provider_model":
+		return row.ProviderKey + "\x00" + row.ProviderLabel + "\x00" + row.Model
+	case "status":
+		return row.Status
+	default:
+		return ""
+	}
+}
+
+func sortSummaryRows(groupBy string, rows []SummaryRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		switch groupBy {
+		case "day":
+			return rows[i].Day < rows[j].Day
+		default:
+			if rows[i].Requests == rows[j].Requests {
+				return summaryMergeKey(groupBy, rows[i]) < summaryMergeKey(groupBy, rows[j])
+			}
+			return rows[i].Requests > rows[j].Requests
+		}
+	})
+}
+
 func scanSummaryRow(rows *sql.Rows, groupBy string) (SummaryRow, error) {
 	var row SummaryRow
 	dest := make([]any, 0, 11)
@@ -736,6 +914,161 @@ FROM usage_rollup_hourly`+where, args...)
 	return m, nil
 }
 
+func (s *SQLiteStore) queryMetricsMixed(ctx context.Context, original QueryFilter, base Metrics, plan usageRollupPlan) (Metrics, error) {
+	combined := base
+	resetMetricsAggregates(&combined)
+	if plan.fullHours != nil {
+		metrics, errRollup := s.queryMetricsRollup(ctx, *plan.fullHours, base)
+		if errRollup != nil {
+			return Metrics{}, errRollup
+		}
+		mergeMetricsInto(&combined, metrics)
+	}
+	for _, partial := range plan.partials {
+		metrics, errRaw := s.queryMetricsRaw(ctx, partial, base)
+		if errRaw != nil {
+			return Metrics{}, errRaw
+		}
+		mergeMetricsInto(&combined, metrics)
+	}
+	finalizeMetrics(&combined)
+	if original.Provider != "" && combined.TotalRequests == 0 {
+		return combined, nil
+	}
+	return combined, nil
+}
+
+func resetMetricsAggregates(m *Metrics) {
+	m.TotalRequests = 0
+	m.SuccessfulRequests = 0
+	m.FailedRequests = 0
+	m.SuccessRate = 0
+	m.TotalPromptTokens = 0
+	m.TotalCompletionTokens = 0
+	m.TotalReasoningTokens = 0
+	m.TotalCachedTokens = 0
+	m.TotalTokens = 0
+	m.RPM = 0
+	m.TPM = 0
+	m.ProviderSuccessRates = nil
+	m.ProviderRequestTotals = nil
+	m.ProviderTokenTotals = nil
+	m.ModelRequestTotals = nil
+	m.ModelTokenTotals = nil
+}
+
+func mergeMetricsInto(target *Metrics, incoming Metrics) {
+	target.TotalRequests += incoming.TotalRequests
+	target.SuccessfulRequests += incoming.SuccessfulRequests
+	target.FailedRequests += incoming.FailedRequests
+	target.TotalPromptTokens += incoming.TotalPromptTokens
+	target.TotalCompletionTokens += incoming.TotalCompletionTokens
+	target.TotalReasoningTokens += incoming.TotalReasoningTokens
+	target.TotalCachedTokens += incoming.TotalCachedTokens
+	target.TotalTokens += incoming.TotalTokens
+	target.ProviderSuccessRates = mergeProviderMetrics(target.ProviderSuccessRates, incoming.ProviderSuccessRates)
+	target.ProviderRequestTotals = target.ProviderSuccessRates
+	target.ProviderTokenTotals = target.ProviderSuccessRates
+	target.ModelRequestTotals = mergeModelMetrics(target.ModelRequestTotals, incoming.ModelRequestTotals)
+	target.ModelTokenTotals = target.ModelRequestTotals
+}
+
+func finalizeMetrics(m *Metrics) {
+	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
+	if m.WindowMinutes <= 0 {
+		m.WindowMinutes = 1
+	}
+	m.RPM = float64(m.TotalRequests) / m.WindowMinutes
+	m.TPM = float64(m.TotalTokens) / m.WindowMinutes
+	sortProviderMetrics(m.ProviderSuccessRates)
+	sortModelMetrics(m.ModelRequestTotals)
+	m.ProviderRequestTotals = m.ProviderSuccessRates
+	m.ProviderTokenTotals = m.ProviderSuccessRates
+	m.ModelTokenTotals = m.ModelRequestTotals
+}
+
+func mergeProviderMetrics(existing, incoming []ProviderMetric) []ProviderMetric {
+	merged := make(map[string]*ProviderMetric, len(existing)+len(incoming))
+	order := make([]string, 0, len(existing)+len(incoming))
+	add := func(item ProviderMetric) {
+		key := item.ProviderKey + "\x00" + item.ProviderLabel
+		target := merged[key]
+		if target == nil {
+			copyItem := item
+			copyItem.AuthID = ""
+			copyItem.AuthPosition = ""
+			copyItem.SuccessRate = 0
+			target = &copyItem
+			merged[key] = target
+			order = append(order, key)
+			return
+		}
+		target.Requests += item.Requests
+		target.Successful += item.Successful
+		target.Failed += item.Failed
+		target.Tokens += item.Tokens
+	}
+	for _, item := range existing {
+		add(item)
+	}
+	for _, item := range incoming {
+		add(item)
+	}
+	out := make([]ProviderMetric, 0, len(order))
+	for _, key := range order {
+		item := *merged[key]
+		item.SuccessRate = successRate(item.Successful, item.Requests)
+		out = append(out, item)
+	}
+	return out
+}
+
+func mergeModelMetrics(existing, incoming []ModelMetric) []ModelMetric {
+	merged := make(map[string]*ModelMetric, len(existing)+len(incoming))
+	order := make([]string, 0, len(existing)+len(incoming))
+	add := func(item ModelMetric) {
+		target := merged[item.Model]
+		if target == nil {
+			copyItem := item
+			target = &copyItem
+			merged[item.Model] = target
+			order = append(order, item.Model)
+			return
+		}
+		target.Requests += item.Requests
+		target.Tokens += item.Tokens
+	}
+	for _, item := range existing {
+		add(item)
+	}
+	for _, item := range incoming {
+		add(item)
+	}
+	out := make([]ModelMetric, 0, len(order))
+	for _, key := range order {
+		out = append(out, *merged[key])
+	}
+	return out
+}
+
+func sortProviderMetrics(rows []ProviderMetric) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Requests == rows[j].Requests {
+			return rows[i].ProviderKey < rows[j].ProviderKey
+		}
+		return rows[i].Requests > rows[j].Requests
+	})
+}
+
+func sortModelMetrics(rows []ModelMetric) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Requests == rows[j].Requests {
+			return rows[i].Model < rows[j].Model
+		}
+		return rows[i].Requests > rows[j].Requests
+	})
+}
+
 func (s *SQLiteStore) queryProviderMetricsRollup(ctx context.Context, where string, args []any) ([]ProviderMetric, error) {
 	rows, errQuery := s.db.QueryContext(ctx, `
 SELECT stats_provider_key, stats_provider_label,
@@ -783,18 +1116,11 @@ ORDER BY requests DESC`, args...)
 	return out, rows.Err()
 }
 
-func canUseUsageRollup(filter QueryFilter) bool {
+func isUsageRollupCompatible(filter QueryFilter) bool {
 	if filter.ErrorStage != "" || filter.ErrorCode != "" || filter.AuthID != "" || filter.AuthLabel != "" || filter.ClientKeyHash != "" {
 		return false
 	}
-	return isHourBoundary(filter.DateFrom) && isHourBoundary(filter.DateTo)
-}
-
-func isHourBoundary(value *time.Time) bool {
-	if value == nil {
-		return true
-	}
-	return value.UTC().Equal(value.UTC().Truncate(time.Hour))
+	return true
 }
 
 func parseTimeQuery(value string) (*time.Time, error) {

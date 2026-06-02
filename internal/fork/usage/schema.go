@@ -68,6 +68,11 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_started_status ON usage_events(start
 CREATE INDEX IF NOT EXISTS idx_usage_events_provider_started ON usage_events(provider_key, started_at);
 CREATE INDEX IF NOT EXISTS idx_usage_events_started_stats_provider ON usage_events(started_at, stats_provider_key);
 CREATE INDEX IF NOT EXISTS idx_usage_events_stats_provider_started ON usage_events(stats_provider_key, started_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_started_model ON usage_events(started_at, model);
+CREATE INDEX IF NOT EXISTS idx_usage_events_started_client_model ON usage_events(started_at, client_model);
+CREATE INDEX IF NOT EXISTS idx_usage_events_started_error_stage ON usage_events(started_at, error_stage);
+CREATE INDEX IF NOT EXISTS idx_usage_events_started_error_code ON usage_events(started_at, error_code);
+CREATE INDEX IF NOT EXISTS idx_usage_events_started_auth_id ON usage_events(started_at, auth_id);
 
 CREATE INDEX IF NOT EXISTS idx_usage_rollup_hourly_bucket ON usage_rollup_hourly(bucket_start);
 CREATE INDEX IF NOT EXISTS idx_usage_rollup_hourly_provider_bucket ON usage_rollup_hourly(stats_provider_key, bucket_start);
