@@ -11,6 +11,13 @@ This repository is a fork of [router-for-me/CLIProxyAPI](https://github.com/rout
 - Usage query APIs such as `/v0/management/usage`
 - Statistics page with filtering by time range, provider, model, auth, etc.
 
+### Keyword Response Filtering
+- Detect configured keywords in upstream streaming responses for provider quota, policy, or custom failure text
+- Supports OpenAI Chat Completions, OpenAI Responses/Codex, Anthropic/Claude, and Gemini-compatible stream formats
+- Matching responses are recorded as failed usage with `keyword_filtered`, including the matched keyword and bounded response context
+- Matching failures can trigger provider fallback and cooldown when another provider is available
+- Manage rules through `/v0/management/keyword-filters` or the management panel
+
 ### Provider Custom Label
 - Set a custom name (`label` field) for AI providers
 - Displayed as the label name in the management panel provider list; auto-generates `{brand}#{seq}` format when unset
@@ -27,6 +34,13 @@ This repository is a fork of [router-for-me/CLIProxyAPI](https://github.com/rout
 usage:
   enabled: true                    # Enable SQLite persistence statistics
   sqlite-path: ./data/usage.db     # Database path (default as above)
+
+# Response keyword filtering
+keyword-filters:
+  - keyword: "insufficient credits"
+    match-mode: "anywhere"         # anywhere, start, end, exact
+    case-sensitive: false
+    enabled: true
 
 # Remote management panel configuration
 remote-management:
