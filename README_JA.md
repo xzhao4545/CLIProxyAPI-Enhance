@@ -11,6 +11,13 @@
 - `/v0/management/usage` などの統計クエリ API を提供
 - 時間範囲、provider、モデル、auth などでフィルタリング可能な統計ページ
 
+### レスポンスキーワードフィルタリング
+- 上流のストリーミングレスポンス内に設定済みキーワードを検出し、プロバイダーのクォータ、ポリシー制限、またはカスタム失敗テキストを識別可能
+- OpenAI Chat Completions、OpenAI Responses/Codex、Anthropic/Claude、Gemini 互換のストリーミング形式をサポート
+- マッチしたレスポンスは `keyword_filtered` として失敗使用量に記録され、マッチしたキーワードと制限されたレスポンスコンテキストを含む
+- 代替プロバイダーが利用可能な場合、マッチによる失敗はプロバイダーのフェイルオーバーとクールダウンをトリガー可能
+- `/v0/management/keyword-filters` または管理パネルからルールを管理可能
+
 ### プロバイダーカスタムラベル
 - AI プロバイダーにカスタム名（`label` フィールド）を設定可能
 - 管理パネルのプロバイダー一覧にラベル名として表示。未設定の場合は `{brand}#{番号}` 形式で自動生成
@@ -27,6 +34,13 @@
 usage:
   enabled: true                    # SQLite 永続化統計を有効化
   sqlite-path: ./data/usage.db     # データベースのパス（デフォルトは上記）
+
+# レスポンスキーワードフィルタリング設定
+keyword-filters:
+  - keyword: "insufficient credits"
+    match-mode: "anywhere"         # anywhere、start、end、exact
+    case-sensitive: false
+    enabled: true
 
 # リモート管理パネルの設定
 remote-management:

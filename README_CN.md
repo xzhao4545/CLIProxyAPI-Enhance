@@ -11,6 +11,13 @@
 - 提供 `/v0/management/usage` 等统计查询 API
 - 支持按时间范围、provider、模型、auth 等条件筛选的统计页面
 
+### 响应关键字过滤
+- 可在上游流式响应中检测配置的关键字，用于识别供应商额度、策略限制或自定义失败文本
+- 支持 OpenAI Chat Completions、OpenAI Responses/Codex、Anthropic/Claude 和 Gemini 兼容流式格式
+- 命中后会以 `keyword_filtered` 记录为失败用量，并包含命中的关键字和受限长度的响应上下文
+- 有可用备用供应商时，命中失败可触发供应商故障转移和冷却
+- 可通过 `/v0/management/keyword-filters` 或管理面板维护规则
+
 ### 提供商自定义标签
 - 可为 AI 提供商设置自定义名称（`label` 字段）
 - 在管理面板提供商列表中显示为标签名，未设置时自动生成 `{brand}#{序号}` 格式
@@ -27,6 +34,13 @@
 usage:
   enabled: true                    # 启用 SQLite 持久化统计
   sqlite-path: ./data/usage.db     # 数据库路径（默认如上）
+
+# 响应关键字过滤配置
+keyword-filters:
+  - keyword: "insufficient credits"
+    match-mode: "anywhere"         # anywhere、start、end、exact
+    case-sensitive: false
+    enabled: true
 
 # 远程管理面板地址配置
 remote-management:
