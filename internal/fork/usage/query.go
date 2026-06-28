@@ -308,6 +308,7 @@ FROM usage_events`+where, args...)
 		return Metrics{}, fmt.Errorf("query usage metrics totals: %w", err)
 	}
 	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
+	m.CacheHitRate = cacheHitRate(m.TotalCachedTokens, m.TotalPromptTokens)
 	m.RPM = float64(m.TotalRequests) / m.WindowMinutes
 	m.TPM = float64(m.TotalTokens) / m.WindowMinutes
 
@@ -868,7 +869,9 @@ SELECT `+providerStatsKeySQL()+` AS provider_key,
 	CASE WHEN COUNT(DISTINCT COALESCE(auth_id, '')) = 1 THEN COALESCE(MAX(auth_id), '') ELSE '' END AS auth_id,
 	COUNT(*) AS requests,
 	SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successful,
-	COALESCE(SUM(total_tokens), 0) AS tokens
+	COALESCE(SUM(total_tokens), 0) AS tokens,
+	COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+	COALESCE(SUM(cached_tokens), 0) AS cached_tokens
 FROM usage_events`+where+`
 GROUP BY 1, 2
 ORDER BY requests DESC`, args...)
@@ -879,11 +882,12 @@ ORDER BY requests DESC`, args...)
 	var out []ProviderMetric
 	for rows.Next() {
 		var item ProviderMetric
-		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.AuthID, &item.Requests, &item.Successful, &item.Tokens); err != nil {
+		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.AuthID, &item.Requests, &item.Successful, &item.Tokens, &item.PromptTokens, &item.CachedTokens); err != nil {
 			return nil, fmt.Errorf("scan usage provider metrics: %w", err)
 		}
 		item.Failed = item.Requests - item.Successful
 		item.SuccessRate = successRate(item.Successful, item.Requests)
+		item.CacheHitRate = cacheHitRate(item.CachedTokens, item.PromptTokens)
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -943,6 +947,7 @@ FROM usage_rollup_hourly`+where, args...)
 		return Metrics{}, fmt.Errorf("query usage metrics rollup totals: %w", err)
 	}
 	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
+	m.CacheHitRate = cacheHitRate(m.TotalCachedTokens, m.TotalPromptTokens)
 	m.RPM = float64(m.TotalRequests) / m.WindowMinutes
 	m.TPM = float64(m.TotalTokens) / m.WindowMinutes
 
@@ -991,6 +996,7 @@ func resetMetricsAggregates(m *Metrics) {
 	m.SuccessfulRequests = 0
 	m.FailedRequests = 0
 	m.SuccessRate = 0
+	m.CacheHitRate = 0
 	m.TotalPromptTokens = 0
 	m.TotalCompletionTokens = 0
 	m.TotalReasoningTokens = 0
@@ -1023,6 +1029,7 @@ func mergeMetricsInto(target *Metrics, incoming Metrics) {
 
 func finalizeMetrics(m *Metrics) {
 	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
+	m.CacheHitRate = cacheHitRate(m.TotalCachedTokens, m.TotalPromptTokens)
 	if m.WindowMinutes <= 0 {
 		m.WindowMinutes = 1
 	}
@@ -1046,6 +1053,7 @@ func mergeProviderMetrics(existing, incoming []ProviderMetric) []ProviderMetric 
 			copyItem.AuthID = ""
 			copyItem.AuthPosition = ""
 			copyItem.SuccessRate = 0
+			copyItem.CacheHitRate = 0
 			target = &copyItem
 			merged[key] = target
 			order = append(order, key)
@@ -1055,6 +1063,8 @@ func mergeProviderMetrics(existing, incoming []ProviderMetric) []ProviderMetric 
 		target.Successful += item.Successful
 		target.Failed += item.Failed
 		target.Tokens += item.Tokens
+		target.PromptTokens += item.PromptTokens
+		target.CachedTokens += item.CachedTokens
 	}
 	for _, item := range existing {
 		add(item)
@@ -1066,6 +1076,7 @@ func mergeProviderMetrics(existing, incoming []ProviderMetric) []ProviderMetric 
 	for _, key := range order {
 		item := *merged[key]
 		item.SuccessRate = successRate(item.Successful, item.Requests)
+		item.CacheHitRate = cacheHitRate(item.CachedTokens, item.PromptTokens)
 		out = append(out, item)
 	}
 	return out
@@ -1122,7 +1133,9 @@ func (s *SQLiteStore) queryProviderMetricsRollup(ctx context.Context, where stri
 SELECT stats_provider_key, stats_provider_label,
 	COALESCE(SUM(requests), 0) AS requests,
 	COALESCE(SUM(successful_requests), 0) AS successful,
-	COALESCE(SUM(total_tokens), 0) AS tokens
+	COALESCE(SUM(total_tokens), 0) AS tokens,
+	COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+	COALESCE(SUM(cached_tokens), 0) AS cached_tokens
 FROM usage_rollup_hourly`+where+`
 GROUP BY stats_provider_key, stats_provider_label
 ORDER BY requests DESC`, args...)
@@ -1133,11 +1146,12 @@ ORDER BY requests DESC`, args...)
 	var out []ProviderMetric
 	for rows.Next() {
 		var item ProviderMetric
-		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.Requests, &item.Successful, &item.Tokens); err != nil {
+		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.Requests, &item.Successful, &item.Tokens, &item.PromptTokens, &item.CachedTokens); err != nil {
 			return nil, fmt.Errorf("scan usage provider metrics rollup: %w", err)
 		}
 		item.Failed = item.Requests - item.Successful
 		item.SuccessRate = successRate(item.Successful, item.Requests)
+		item.CacheHitRate = cacheHitRate(item.CachedTokens, item.PromptTokens)
 		out = append(out, item)
 	}
 	return out, rows.Err()

@@ -131,6 +131,7 @@ func TestSQLiteStoreMetricsAndFilters(t *testing.T) {
 		PromptTokens:     10,
 		CompletionTokens: 15,
 		TotalTokens:      25,
+		CachedTokens:     4,
 	})
 	mustInsertEvent(t, store, Event{
 		StartedAt:        base.Add(30 * time.Second),
@@ -147,6 +148,7 @@ func TestSQLiteStoreMetricsAndFilters(t *testing.T) {
 		PromptTokens:     2,
 		CompletionTokens: 0,
 		TotalTokens:      2,
+		CachedTokens:     2,
 	})
 
 	metrics, err := store.QueryMetrics(QueryFilter{
@@ -162,7 +164,12 @@ func TestSQLiteStoreMetricsAndFilters(t *testing.T) {
 	if metrics.TotalTokens != 27 || metrics.RPM != 2 || metrics.TPM != 27 || metrics.SuccessRate != 0.5 {
 		t.Fatalf("metrics rates/tokens = %+v", metrics)
 	}
-	if len(metrics.ProviderSuccessRates) != 1 || metrics.ProviderSuccessRates[0].SuccessRate != 0.5 {
+	if metrics.TotalPromptTokens != 12 || metrics.TotalCachedTokens != 6 || metrics.CacheHitRate != 0.5 {
+		t.Fatalf("metrics cache hit rate = %+v", metrics)
+	}
+	if len(metrics.ProviderSuccessRates) != 1 || metrics.ProviderSuccessRates[0].SuccessRate != 0.5 ||
+		metrics.ProviderSuccessRates[0].PromptTokens != 12 || metrics.ProviderSuccessRates[0].CachedTokens != 6 ||
+		metrics.ProviderSuccessRates[0].CacheHitRate != 0.5 {
 		t.Fatalf("provider metrics = %+v", metrics.ProviderSuccessRates)
 	}
 
@@ -303,6 +310,7 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 			PromptTokens:     1,
 			CompletionTokens: 9,
 			TotalTokens:      10,
+			CachedTokens:     1,
 		},
 		{
 			StartedAt:        base.Add(time.Second),
@@ -319,6 +327,7 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 			PromptTokens:     2,
 			CompletionTokens: 18,
 			TotalTokens:      20,
+			CachedTokens:     1,
 		},
 		{
 			StartedAt:        base.Add(2 * time.Second),
@@ -332,6 +341,7 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 			PromptTokens:     3,
 			CompletionTokens: 0,
 			TotalTokens:      3,
+			CachedTokens:     0,
 		},
 		{
 			StartedAt:        base.Add(3 * time.Second),
@@ -345,6 +355,7 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 			PromptTokens:     4,
 			CompletionTokens: 0,
 			TotalTokens:      4,
+			CachedTokens:     2,
 		},
 	}
 	for _, event := range events {
@@ -373,17 +384,17 @@ func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 		t.Fatalf("QueryMetrics() error = %v", err)
 	}
 	sharedMetric := requireProviderMetric(t, metrics.ProviderRequestTotals, "Shared Codex")
-	if sharedMetric.ProviderLabel != "Shared Codex" || sharedMetric.Requests != 2 || sharedMetric.Successful != 1 || sharedMetric.Failed != 1 || sharedMetric.Tokens != 30 || sharedMetric.AuthID != "" {
+	if sharedMetric.ProviderLabel != "Shared Codex" || sharedMetric.Requests != 2 || sharedMetric.Successful != 1 || sharedMetric.Failed != 1 || sharedMetric.Tokens != 30 || sharedMetric.PromptTokens != 3 || sharedMetric.CachedTokens != 2 || sharedMetric.CacheHitRate != float64(2)/float64(3) || sharedMetric.AuthID != "" {
 		t.Fatalf("shared metric = %+v", sharedMetric)
 	}
 	rollupMetrics, err := store.QueryMetrics(QueryFilter{DateFrom: ptrTime(base), DateTo: ptrTime(base.Add(time.Hour))})
 	if err != nil {
 		t.Fatalf("QueryMetrics(rollup range) error = %v", err)
 	}
-	if rollupMetrics.TotalRequests != 4 || rollupMetrics.SuccessfulRequests != 3 || rollupMetrics.FailedRequests != 1 || rollupMetrics.TotalTokens != 37 {
+	if rollupMetrics.TotalRequests != 4 || rollupMetrics.SuccessfulRequests != 3 || rollupMetrics.FailedRequests != 1 || rollupMetrics.TotalTokens != 37 || rollupMetrics.TotalPromptTokens != 10 || rollupMetrics.TotalCachedTokens != 4 || rollupMetrics.CacheHitRate != 0.4 {
 		t.Fatalf("rollup metrics = %+v", rollupMetrics)
 	}
-	if metric := requireProviderMetric(t, rollupMetrics.ProviderRequestTotals, "Shared Codex"); metric.Requests != 2 || metric.Tokens != 30 {
+	if metric := requireProviderMetric(t, rollupMetrics.ProviderRequestTotals, "Shared Codex"); metric.Requests != 2 || metric.Tokens != 30 || metric.PromptTokens != 3 || metric.CachedTokens != 2 || metric.CacheHitRate != float64(2)/float64(3) {
 		t.Fatalf("shared rollup metric = %+v", metric)
 	}
 	var rollupRows int
@@ -532,6 +543,7 @@ func TestSQLiteStoreMixedRollupRangeMatchesExpectedTotals(t *testing.T) {
 			PromptTokens:     1,
 			CompletionTokens: 9,
 			TotalTokens:      10,
+			CachedTokens:     1,
 		},
 		{
 			StartedAt:        base.Add(time.Hour + 10*time.Minute),
@@ -545,6 +557,7 @@ func TestSQLiteStoreMixedRollupRangeMatchesExpectedTotals(t *testing.T) {
 			PromptTokens:     2,
 			CompletionTokens: 18,
 			TotalTokens:      20,
+			CachedTokens:     1,
 		},
 		{
 			StartedAt:        base.Add(2*time.Hour + 10*time.Minute),
@@ -558,6 +571,7 @@ func TestSQLiteStoreMixedRollupRangeMatchesExpectedTotals(t *testing.T) {
 			PromptTokens:     3,
 			CompletionTokens: 27,
 			TotalTokens:      30,
+			CachedTokens:     3,
 		},
 	} {
 		mustInsertEvent(t, store, event)
@@ -569,11 +583,11 @@ func TestSQLiteStoreMixedRollupRangeMatchesExpectedTotals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryMetrics(mixed) error = %v", err)
 	}
-	if metrics.TotalRequests != 3 || metrics.SuccessfulRequests != 2 || metrics.FailedRequests != 1 || metrics.TotalTokens != 60 {
+	if metrics.TotalRequests != 3 || metrics.SuccessfulRequests != 2 || metrics.FailedRequests != 1 || metrics.TotalTokens != 60 || metrics.TotalPromptTokens != 6 || metrics.TotalCachedTokens != 5 || metrics.CacheHitRate != float64(5)/float64(6) {
 		t.Fatalf("mixed metrics = %+v", metrics)
 	}
 	sharedMetric := requireProviderMetric(t, metrics.ProviderRequestTotals, "Shared Codex")
-	if sharedMetric.Requests != 3 || sharedMetric.Successful != 2 || sharedMetric.Failed != 1 || sharedMetric.Tokens != 60 {
+	if sharedMetric.Requests != 3 || sharedMetric.Successful != 2 || sharedMetric.Failed != 1 || sharedMetric.Tokens != 60 || sharedMetric.PromptTokens != 6 || sharedMetric.CachedTokens != 5 || sharedMetric.CacheHitRate != float64(5)/float64(6) {
 		t.Fatalf("mixed provider metric = %+v", sharedMetric)
 	}
 	summary, err := store.QuerySummary(SummaryFilter{QueryFilter: QueryFilter{DateFrom: &from, DateTo: &to}, GroupBy: "provider"})

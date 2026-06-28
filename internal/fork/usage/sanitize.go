@@ -57,3 +57,10 @@ func successRate(success, total int64) float64 {
 	}
 	return float64(success) / float64(total)
 }
+
+func cacheHitRate(cachedTokens, promptTokens int64) float64 {
+	if promptTokens <= 0 {
+		return 0
+	}
+	return float64(cachedTokens) / float64(promptTokens)
+}

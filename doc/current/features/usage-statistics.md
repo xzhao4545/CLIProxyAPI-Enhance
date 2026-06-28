@@ -38,6 +38,7 @@ Metrics include:
 
 - total requests, successes, failures, and success rate
 - prompt, completion, reasoning, cached, and total tokens
+- cache hit rate, calculated as cached input tokens divided by prompt tokens
 - RPM and TPM over the selected time window
 - provider request, token, and success-rate metrics
 - model request and token metrics

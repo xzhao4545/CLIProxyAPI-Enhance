@@ -143,6 +143,7 @@ type Metrics struct {
 	SuccessfulRequests    int64            `json:"successful_requests"`
 	FailedRequests        int64            `json:"failed_requests"`
 	SuccessRate           float64          `json:"success_rate"`
+	CacheHitRate          float64          `json:"cache_hit_rate"`
 	TotalPromptTokens     int64            `json:"total_prompt_tokens"`
 	TotalCompletionTokens int64            `json:"total_completion_tokens"`
 	TotalReasoningTokens  int64            `json:"total_reasoning_tokens"`
@@ -166,7 +167,10 @@ type ProviderMetric struct {
 	Successful    int64   `json:"successful_requests"`
 	Failed        int64   `json:"failed_requests"`
 	Tokens        int64   `json:"tokens"`
+	PromptTokens  int64   `json:"prompt_tokens"`
+	CachedTokens  int64   `json:"cached_tokens"`
 	SuccessRate   float64 `json:"success_rate"`
+	CacheHitRate  float64 `json:"cache_hit_rate"`
 }
 
 type ModelMetric struct {
