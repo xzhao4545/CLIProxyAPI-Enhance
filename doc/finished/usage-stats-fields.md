@@ -24,6 +24,7 @@ Extended the usage statistics pipeline so each persisted usage event records the
 - `internal/fork/usage/query.go` — extended `buildWhere`, `distinctStrings`, `isAllowedDistinctColumn`, `isUsageRollupCompatible`, `QueryFiltersContext`; added `parseStreamFlag`.
 - `internal/fork/usage/handlers.go` — bound new query parameters (`response_model`, `auth_type`, `auth_category`, `stream`, `reasoning_effort`).
 - `internal/fork/usage/recorder.go` — `buildEvent` populates the new columns directly; `metadataFromRecord` no longer duplicates `auth_type`, `reasoning_effort`, or `ttft_ms` (only `source` remains in metadata).
+- `internal/thinking/apply.go` — `ExtractReasoningEffort` for `openai-response` provider now falls back to `extractOpenAIConfig` (Chat Completions `reasoning_effort` field) when `extractCodexConfig` (`reasoning.effort`) yields no config, matching the behavior of `ExtractTranslatedReasoningEffort`.
 
 ## Migration
 
