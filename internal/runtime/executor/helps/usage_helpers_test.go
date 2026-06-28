@@ -225,6 +225,96 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	}
 }
 
+func TestUsageReporterSetStreamAndResponseModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	reporter.SetStream(true)
+	reporter.SetResponseModel("gpt-5.4-real")
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+	if !record.Stream {
+		t.Fatalf("stream = false, want true")
+	}
+	if record.ResponseModel != "gpt-5.4-real" {
+		t.Fatalf("response model = %q, want %q", record.ResponseModel, "gpt-5.4-real")
+	}
+}
+
+func TestUsageReporterSetResponseModelFirstNonEmptyWins(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	reporter.SetResponseModel("first-model")
+	reporter.SetResponseModel("second-model")
+
+	if got := reporter.responseModel(); got != "first-model" {
+		t.Fatalf("response model = %q, want %q", got, "first-model")
+	}
+}
+
+func TestUsageReporterSetResponseModelIgnoresEmpty(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	reporter.SetResponseModel("")
+
+	if got := reporter.responseModel(); got != "" {
+		t.Fatalf("response model = %q, want empty", got)
+	}
+}
+
+func TestExtractOpenAIResponseModel(t *testing.T) {
+	if got := ExtractOpenAIResponseModel([]byte(`{"model":"gpt-5.4","choices":[]}`)); got != "gpt-5.4" {
+		t.Fatalf("got %q, want gpt-5.4", got)
+	}
+	if got := ExtractOpenAIResponseModel([]byte(`{"response":{"model":"gpt-5.5"}}`)); got != "gpt-5.5" {
+		t.Fatalf("got %q, want gpt-5.5", got)
+	}
+	if got := ExtractOpenAIResponseModel([]byte(`{"choices":[]}`)); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestExtractOpenAIStreamResponseModel(t *testing.T) {
+	line := []byte(`data: {"id":"chunk_1","model":"gpt-5.4","choices":[]}`)
+	if got := ExtractOpenAIStreamResponseModel(line); got != "gpt-5.4" {
+		t.Fatalf("got %q, want gpt-5.4", got)
+	}
+	lineResponse := []byte(`data: {"type":"response.completed","response":{"model":"gpt-5.5"}}`)
+	if got := ExtractOpenAIStreamResponseModel(lineResponse); got != "gpt-5.5" {
+		t.Fatalf("got %q, want gpt-5.5", got)
+	}
+	if got := ExtractOpenAIStreamResponseModel([]byte(`data: {"choices":[]}`)); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestExtractCodexResponseModel(t *testing.T) {
+	data := []byte(`{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5-codex","usage":{"input_tokens":1}}}`)
+	if got := ExtractCodexResponseModel(data); got != "gpt-5-codex" {
+		t.Fatalf("got %q, want gpt-5-codex", got)
+	}
+	if got := ExtractCodexResponseModel([]byte(`{"type":"response.created"}`)); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestExtractClaudeResponseModel(t *testing.T) {
+	data := []byte(`{"id":"msg_1","type":"message","model":"claude-sonnet-4-5","role":"assistant"}`)
+	if got := ExtractClaudeResponseModel(data); got != "claude-sonnet-4-5" {
+		t.Fatalf("got %q, want claude-sonnet-4-5", got)
+	}
+	if got := ExtractClaudeResponseModel([]byte(`{"id":"msg_1","type":"message"}`)); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestExtractClaudeStreamResponseModel(t *testing.T) {
+	line := []byte(`data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-5"}}`)
+	if got := ExtractClaudeStreamResponseModel(line); got != "claude-sonnet-4-5" {
+		t.Fatalf("got %q, want claude-sonnet-4-5", got)
+	}
+	nonStart := []byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`)
+	if got := ExtractClaudeStreamResponseModel(nonStart); got != "" {
+		t.Fatalf("got %q, want empty for non-message_start", got)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

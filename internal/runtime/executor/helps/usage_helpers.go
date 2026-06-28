@@ -37,6 +37,9 @@ type UsageReporter struct {
 	ttftStart   time.Time
 	ttftSet     bool
 	once        sync.Once
+	stream      bool
+	respModelMu sync.RWMutex
+	respModel   string
 }
 
 func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
@@ -80,6 +83,32 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+}
+
+// SetStream marks this reporter as serving a streaming (SSE) request.
+func (r *UsageReporter) SetStream(stream bool) {
+	if r == nil {
+		return
+	}
+	r.stream = stream
+}
+
+// SetResponseModel records the model name returned by the upstream provider in its
+// response body or stream chunk. Empty values are ignored so the first non-empty
+// observation wins.
+func (r *UsageReporter) SetResponseModel(model string) {
+	if r == nil {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	r.respModelMu.Lock()
+	if r.respModel == "" {
+		r.respModel = model
+	}
+	r.respModelMu.Unlock()
 }
 
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
@@ -249,6 +278,8 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Failed:          failed,
 		Fail:            fail,
 		Detail:          detail,
+		Stream:          r.stream,
+		ResponseModel:   r.responseModel(),
 	}
 }
 
@@ -306,6 +337,15 @@ func (r *UsageReporter) ttftDuration() time.Duration {
 	r.ttftMu.RLock()
 	defer r.ttftMu.RUnlock()
 	return r.ttft
+}
+
+func (r *UsageReporter) responseModel() string {
+	if r == nil {
+		return ""
+	}
+	r.respModelMu.RLock()
+	defer r.respModelMu.RUnlock()
+	return r.respModel
 }
 
 type usageTTFTRoundTripper struct {
@@ -816,6 +856,62 @@ func isStopChunkWithoutUsage(jsonBytes []byte) bool {
 
 func JSONPayload(line []byte) []byte {
 	return jsonPayload(line)
+}
+
+// ExtractOpenAIResponseModel returns the model field from an OpenAI ChatCompletion
+// or Responses non-stream response body. Returns empty when absent.
+func ExtractOpenAIResponseModel(data []byte) string {
+	if len(data) == 0 || !gjson.ValidBytes(data) {
+		return ""
+	}
+	if model := strings.TrimSpace(gjson.GetBytes(data, "model").String()); model != "" {
+		return model
+	}
+	return strings.TrimSpace(gjson.GetBytes(data, "response.model").String())
+}
+
+// ExtractOpenAIStreamResponseModel returns the model field from an OpenAI
+// ChatCompletion or Responses SSE data line. Returns empty when the line has no
+// model field.
+func ExtractOpenAIStreamResponseModel(line []byte) string {
+	payload := jsonPayload(line)
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	if model := strings.TrimSpace(gjson.GetBytes(payload, "model").String()); model != "" {
+		return model
+	}
+	return strings.TrimSpace(gjson.GetBytes(payload, "response.model").String())
+}
+
+// ExtractCodexResponseModel returns the model from a Codex response.completed SSE
+// event payload or a non-stream Codex response body.
+func ExtractCodexResponseModel(data []byte) string {
+	if len(data) == 0 || !gjson.ValidBytes(data) {
+		return ""
+	}
+	return strings.TrimSpace(gjson.GetBytes(data, "response.model").String())
+}
+
+// ExtractClaudeResponseModel returns the model from a Claude non-stream message body.
+func ExtractClaudeResponseModel(data []byte) string {
+	if len(data) == 0 || !gjson.ValidBytes(data) {
+		return ""
+	}
+	return strings.TrimSpace(gjson.GetBytes(data, "model").String())
+}
+
+// ExtractClaudeStreamResponseModel returns the model from a Claude message_start SSE
+// data line. Returns empty for other event types or when the model is absent.
+func ExtractClaudeStreamResponseModel(line []byte) string {
+	payload := jsonPayload(line)
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(payload, "type").String()), "message_start") {
+		return ""
+	}
+	return strings.TrimSpace(gjson.GetBytes(payload, "message.model").String())
 }
 
 func jsonPayload(line []byte) []byte {

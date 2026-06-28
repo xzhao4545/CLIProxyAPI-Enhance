@@ -144,6 +144,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 			collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 		case "response.completed":
 			if detail, ok := helps.ParseCodexUsage(eventData); ok {
+				reporter.SetResponseModel(helps.ExtractOpenAIResponseModel(eventData))
 				reporter.Publish(ctx, detail)
 			}
 			publishCodexImageToolUsage(ctx, reporter, body, eventData)
@@ -181,6 +182,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	mainModel := e.resolveGPTImage2BaseModel()
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), mainModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	reporter.SetStream(true)
 
 	body, errBuild := e.prepareCodexOpenAIImageBody(prepared.Body, req, opts, mainModel)
 	if errBuild != nil {
@@ -266,6 +268,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 				}
 			case "response.completed":
 				if detail, ok := helps.ParseCodexUsage(eventData); ok {
+					reporter.SetResponseModel(helps.ExtractOpenAIStreamResponseModel(line))
 					reporter.Publish(ctx, detail)
 				}
 				publishCodexImageToolUsage(ctx, reporter, body, eventData)

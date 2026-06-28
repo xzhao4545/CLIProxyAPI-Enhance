@@ -372,6 +372,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
+			reporter.SetResponseModel(helps.ExtractCodexResponseModel(eventData))
 			reporter.Publish(ctx, detail)
 		}
 		publishCodexImageToolUsage(ctx, reporter, body, eventData)
@@ -494,6 +495,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.SetResponseModel(helps.ExtractOpenAIResponseModel(data))
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	reporter.EnsurePublished(ctx)
 	var param any
@@ -518,6 +520,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	reporter.SetStream(true)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
@@ -628,6 +631,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
 					if detail, ok := helps.ParseCodexUsage(data); ok {
+						reporter.SetResponseModel(helps.ExtractCodexResponseModel(data))
 						reporter.Publish(ctx, detail)
 					}
 					publishCodexImageToolUsage(ctx, reporter, body, data)

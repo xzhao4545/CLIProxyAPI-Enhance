@@ -22,9 +22,13 @@ type Event struct {
 	AuthLabel        string    `json:"auth_label,omitempty"`
 	AuthIndex        string    `json:"auth_index,omitempty"`
 	AuthPosition     string    `json:"auth_position,omitempty"`
+	AuthType         string    `json:"auth_type,omitempty"`
+	AuthCategory     string    `json:"auth_category,omitempty"`
 	Model            string    `json:"model"`
 	ClientModel      string    `json:"client_model,omitempty"`
+	ResponseModel    string    `json:"response_model,omitempty"`
 	Route            string    `json:"route,omitempty"`
+	Stream           bool      `json:"stream"`
 	Status           string    `json:"status"`
 	HTTPStatus       int       `json:"http_status,omitempty"`
 	UpstreamStatus   int       `json:"upstream_status,omitempty"`
@@ -32,7 +36,9 @@ type Event struct {
 	CompletionTokens int64     `json:"completion_tokens"`
 	TotalTokens      int64     `json:"total_tokens"`
 	ReasoningTokens  int64     `json:"reasoning_tokens"`
+	ReasoningEffort  string    `json:"reasoning_effort,omitempty"`
 	CachedTokens     int64     `json:"cached_tokens"`
+	TTFTMS           int64     `json:"ttft_ms,omitempty"`
 	ClientKeyHash    string    `json:"client_key_hash,omitempty"`
 	ErrorStage       string    `json:"error_stage,omitempty"`
 	ErrorCode        string    `json:"error_code,omitempty"`
@@ -47,11 +53,16 @@ type QueryFilter struct {
 	ProviderLabel   string
 	Model           string
 	ClientModel     string
+	ResponseModel   string
 	Status          string
 	ErrorStage      string
 	ErrorCode       string
 	AuthID          string
 	AuthLabel       string
+	AuthType        string
+	AuthCategory    string
+	Stream          string
+	ReasoningEffort string
 	ClientKeyHash   string
 	DateFrom        *time.Time
 	DateTo          *time.Time
@@ -103,14 +114,18 @@ type FailureRow struct {
 }
 
 type FilterOptions struct {
-	Providers      []FilterOption `json:"providers"`
-	ProviderLabels []string       `json:"provider_labels"`
-	Models         []string       `json:"models"`
-	ClientModels   []string       `json:"client_models"`
-	AuthLabels     []string       `json:"auth_labels"`
-	Statuses       []string       `json:"statuses"`
-	ErrorStages    []string       `json:"error_stages"`
-	ErrorCodes     []string       `json:"error_codes"`
+	Providers        []FilterOption `json:"providers"`
+	ProviderLabels   []string       `json:"provider_labels"`
+	Models           []string       `json:"models"`
+	ClientModels     []string       `json:"client_models"`
+	ResponseModels   []string       `json:"response_models"`
+	AuthLabels       []string       `json:"auth_labels"`
+	AuthTypes        []string       `json:"auth_types"`
+	AuthCategories   []string       `json:"auth_categories"`
+	ReasoningEfforts []string       `json:"reasoning_efforts"`
+	Statuses         []string       `json:"statuses"`
+	ErrorStages      []string       `json:"error_stages"`
+	ErrorCodes       []string       `json:"error_codes"`
 }
 
 type FilterOption struct {

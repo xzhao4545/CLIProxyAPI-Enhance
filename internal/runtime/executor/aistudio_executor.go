@@ -197,6 +197,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 
 	translatedReq, body, err := e.translateRequest(req, opts, true)

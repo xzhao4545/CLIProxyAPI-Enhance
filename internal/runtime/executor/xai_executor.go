@@ -169,6 +169,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 			xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 		case "response.completed":
 			if detail, ok := helps.ParseCodexUsage(eventData); ok {
+				reporter.SetResponseModel(helps.ExtractOpenAIResponseModel(data))
 				reporter.Publish(ctx, detail)
 			}
 			completedData := xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
@@ -303,6 +304,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	}
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), prepared.baseModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 
@@ -360,6 +362,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
 					if detail, ok := helps.ParseCodexUsage(eventData); ok {
+						reporter.SetResponseModel(helps.ExtractOpenAIStreamResponseModel(line))
 						reporter.Publish(ctx, detail)
 					}
 					eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)

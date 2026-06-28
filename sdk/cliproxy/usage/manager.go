@@ -30,6 +30,12 @@ type Record struct {
 	Failed          bool
 	Fail            Failure
 	Detail          Detail
+	// Stream indicates whether the request was served in streaming mode.
+	Stream bool
+	// ResponseModel stores the model name returned by the upstream provider in its
+	// response body or first stream chunk. Empty when the provider response omits a
+	// model field (e.g. Gemini family).
+	ResponseModel string
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }

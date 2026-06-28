@@ -336,6 +336,15 @@ func buildEvent(ctx context.Context, record coreusage.Record, cfg Config) Event 
 	if total == 0 {
 		total = record.Detail.InputTokens + record.Detail.OutputTokens + record.Detail.ReasoningTokens
 	}
+	authType := strings.TrimSpace(record.AuthType)
+	if authType == "" {
+		authType = classifyAuthType(record.Source, record.AuthType)
+	}
+	authCategory := composeAuthCategory(record.Provider, authType)
+	ttftMS := int64(0)
+	if record.TTFT > 0 {
+		ttftMS = record.TTFT.Milliseconds()
+	}
 	metadataJSON := metadataFromRecord(record)
 	return Event{
 		RequestID:        strings.TrimSpace(internallogging.GetRequestID(ctx)),
@@ -347,9 +356,13 @@ func buildEvent(ctx context.Context, record coreusage.Record, cfg Config) Event 
 		AuthID:           strings.TrimSpace(record.AuthID),
 		AuthLabel:        authLabel,
 		AuthIndex:        strings.TrimSpace(record.AuthIndex),
+		AuthType:         authType,
+		AuthCategory:     authCategory,
 		Model:            strings.TrimSpace(record.Model),
 		ClientModel:      strings.TrimSpace(record.Alias),
+		ResponseModel:    strings.TrimSpace(record.ResponseModel),
 		Route:            strings.TrimSpace(internallogging.GetEndpoint(ctx)),
+		Stream:           record.Stream,
 		Status:           status,
 		HTTPStatus:       httpStatus,
 		UpstreamStatus:   failStatus,
@@ -357,7 +370,9 @@ func buildEvent(ctx context.Context, record coreusage.Record, cfg Config) Event 
 		CompletionTokens: record.Detail.OutputTokens,
 		TotalTokens:      total,
 		ReasoningTokens:  record.Detail.ReasoningTokens,
+		ReasoningEffort:  strings.TrimSpace(record.ReasoningEffort),
 		CachedTokens:     record.Detail.CachedTokens,
+		TTFTMS:           ttftMS,
 		ClientKeyHash:    hashClientKey(record.APIKey),
 		ErrorStage:       errorStage,
 		ErrorCode:        errorCode,
@@ -387,17 +402,8 @@ func inferErrorStage(failure coreusage.Failure, status int) string {
 
 func metadataFromRecord(record coreusage.Record) string {
 	meta := map[string]any{}
-	if value := strings.TrimSpace(record.AuthType); value != "" {
-		meta["auth_type"] = value
-	}
 	if value := strings.TrimSpace(record.Source); value != "" {
 		meta["source"] = value
-	}
-	if value := strings.TrimSpace(record.ReasoningEffort); value != "" {
-		meta["reasoning_effort"] = value
-	}
-	if record.TTFT > 0 {
-		meta["ttft_ms"] = record.TTFT.Milliseconds()
 	}
 	if len(meta) == 0 {
 		return ""
@@ -407,4 +413,29 @@ func metadataFromRecord(record coreusage.Record) string {
 		return ""
 	}
 	return string(data)
+}
+
+// classifyAuthType normalizes the auth kind reported by the runtime into the
+// canonical "oauth" / "apikey" / "" bucket used for statistics.
+func classifyAuthType(source, authType string) string {
+	authType = strings.TrimSpace(authType)
+	if authType != "" {
+		return authType
+	}
+	if strings.TrimSpace(source) != "" {
+		return "apikey"
+	}
+	return ""
+}
+
+// composeAuthCategory builds the "provider/authType" composite used for filtering
+// and grouping (e.g. "gemini-cli/oauth", "openai-compat/apikey"). Empty when
+// either component is missing.
+func composeAuthCategory(provider, authType string) string {
+	provider = strings.TrimSpace(provider)
+	authType = strings.TrimSpace(authType)
+	if provider == "" || authType == "" {
+		return ""
+	}
+	return provider + "/" + authType
 }

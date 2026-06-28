@@ -180,6 +180,111 @@ func TestSQLiteStoreMetricsAndFilters(t *testing.T) {
 	requireContains(t, options.ErrorCodes, "read_failed")
 }
 
+func TestSQLiteStoreNewColumnsRoundTripAndFilter(t *testing.T) {
+	store := openTestStore(t)
+	defer closeTestStore(t, store)
+
+	base := time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC)
+	mustInsertEvent(t, store, Event{
+		StartedAt:        base,
+		CompletedAt:      base,
+		ProviderKey:      "claude",
+		ProviderLabel:    "Claude OAuth",
+		Model:            "claude-sonnet",
+		ClientModel:      "client-claude",
+		ResponseModel:    "claude-sonnet-4-5",
+		Route:            "POST /v1/messages",
+		Stream:           true,
+		Status:           StatusSuccess,
+		AuthType:         "oauth",
+		AuthCategory:     "claude/oauth",
+		ReasoningEffort:  "medium",
+		TTFTMS:           320,
+		PromptTokens:     5,
+		CompletionTokens: 7,
+		TotalTokens:      12,
+	})
+	mustInsertEvent(t, store, Event{
+		StartedAt:        base.Add(time.Minute),
+		CompletedAt:      base.Add(time.Minute),
+		ProviderKey:      "openai-compat",
+		ProviderLabel:    "Compat Key",
+		Model:            "gpt-5.4",
+		ClientModel:      "gpt-5.4",
+		ResponseModel:    "",
+		Route:            "POST /v1/chat/completions",
+		Stream:           false,
+		Status:           StatusSuccess,
+		AuthType:         "apikey",
+		AuthCategory:     "openai-compat/apikey",
+		ReasoningEffort:  "low",
+		TTFTMS:           0,
+		PromptTokens:     1,
+		CompletionTokens: 2,
+		TotalTokens:      3,
+	})
+
+	streaming, err := store.QueryEvents(QueryFilter{Stream: "streaming"})
+	if err != nil {
+		t.Fatalf("QueryEvents(stream) error = %v", err)
+	}
+	if streaming.Total != 1 || streaming.Events[0].ResponseModel != "claude-sonnet-4-5" || !streaming.Events[0].Stream {
+		t.Fatalf("streaming event = %+v", streaming.Events)
+	}
+
+	sync, err := store.QueryEvents(QueryFilter{Stream: "sync"})
+	if err != nil {
+		t.Fatalf("QueryEvents(sync) error = %v", err)
+	}
+	if sync.Total != 1 || sync.Events[0].Stream {
+		t.Fatalf("sync event = %+v", sync.Events)
+	}
+
+	byAuthType, err := store.QueryEvents(QueryFilter{AuthType: "oauth"})
+	if err != nil {
+		t.Fatalf("QueryEvents(auth_type) error = %v", err)
+	}
+	if byAuthType.Total != 1 || byAuthType.Events[0].AuthCategory != "claude/oauth" {
+		t.Fatalf("auth_type event = %+v", byAuthType)
+	}
+
+	byCategory, err := store.QueryEvents(QueryFilter{AuthCategory: "openai-compat/apikey"})
+	if err != nil {
+		t.Fatalf("QueryEvents(auth_category) error = %v", err)
+	}
+	if byCategory.Total != 1 {
+		t.Fatalf("auth_category total = %d, want 1", byCategory.Total)
+	}
+
+	byResponseModel, err := store.QueryEvents(QueryFilter{ResponseModel: "claude-sonnet-4-5"})
+	if err != nil {
+		t.Fatalf("QueryEvents(response_model) error = %v", err)
+	}
+	if byResponseModel.Total != 1 {
+		t.Fatalf("response_model total = %d, want 1", byResponseModel.Total)
+	}
+
+	byReasoning, err := store.QueryEvents(QueryFilter{ReasoningEffort: "medium"})
+	if err != nil {
+		t.Fatalf("QueryEvents(reasoning_effort) error = %v", err)
+	}
+	if byReasoning.Total != 1 || byReasoning.Events[0].TTFTMS != 320 {
+		t.Fatalf("reasoning event = %+v", byReasoning.Events[0])
+	}
+
+	options, err := store.QueryFilters(QueryFilter{})
+	if err != nil {
+		t.Fatalf("QueryFilters() error = %v", err)
+	}
+	requireContains(t, options.AuthTypes, "oauth")
+	requireContains(t, options.AuthTypes, "apikey")
+	requireContains(t, options.AuthCategories, "claude/oauth")
+	requireContains(t, options.AuthCategories, "openai-compat/apikey")
+	requireContains(t, options.ResponseModels, "claude-sonnet-4-5")
+	requireContains(t, options.ReasoningEfforts, "medium")
+	requireContains(t, options.ReasoningEfforts, "low")
+}
+
 func TestSQLiteStoreAggregatesProvidersByLabelThenIndex(t *testing.T) {
 	store := openTestStore(t)
 	defer closeTestStore(t, store)

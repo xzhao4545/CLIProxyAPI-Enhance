@@ -226,7 +226,19 @@ func (s *SQLiteStore) QueryFiltersContext(ctx context.Context, filter QueryFilte
 	if options.ClientModels, err = s.distinctStrings(ctx, "client_model", where, args); err != nil {
 		return FilterOptions{}, err
 	}
+	if options.ResponseModels, err = s.distinctStrings(ctx, "response_model", where, args); err != nil {
+		return FilterOptions{}, err
+	}
 	if options.AuthLabels, err = s.distinctStrings(ctx, "auth_label", where, args); err != nil {
+		return FilterOptions{}, err
+	}
+	if options.AuthTypes, err = s.distinctStrings(ctx, "auth_type", where, args); err != nil {
+		return FilterOptions{}, err
+	}
+	if options.AuthCategories, err = s.distinctStrings(ctx, "auth_category", where, args); err != nil {
+		return FilterOptions{}, err
+	}
+	if options.ReasoningEfforts, err = s.distinctStrings(ctx, "reasoning_effort", where, args); err != nil {
 		return FilterOptions{}, err
 	}
 	if options.ErrorStages, err = s.distinctStrings(ctx, "error_stage", where, args); err != nil {
@@ -321,11 +333,16 @@ func normalizeQueryFilter(filter QueryFilter) QueryFilter {
 	filter.ProviderLabel = strings.TrimSpace(filter.ProviderLabel)
 	filter.Model = strings.TrimSpace(filter.Model)
 	filter.ClientModel = strings.TrimSpace(filter.ClientModel)
+	filter.ResponseModel = strings.TrimSpace(filter.ResponseModel)
 	filter.Status = strings.TrimSpace(filter.Status)
 	filter.ErrorStage = strings.TrimSpace(filter.ErrorStage)
 	filter.ErrorCode = strings.TrimSpace(filter.ErrorCode)
 	filter.AuthID = strings.TrimSpace(filter.AuthID)
 	filter.AuthLabel = strings.TrimSpace(filter.AuthLabel)
+	filter.AuthType = strings.TrimSpace(filter.AuthType)
+	filter.AuthCategory = strings.TrimSpace(filter.AuthCategory)
+	filter.Stream = strings.TrimSpace(filter.Stream)
+	filter.ReasoningEffort = strings.TrimSpace(filter.ReasoningEffort)
 	filter.ClientKeyHash = strings.TrimSpace(filter.ClientKeyHash)
 	filter.Sort = strings.ToLower(strings.TrimSpace(filter.Sort))
 	filter.Order = strings.ToLower(strings.TrimSpace(filter.Order))
@@ -363,6 +380,9 @@ func buildWhere(filter QueryFilter, includePagination bool) (string, []any) {
 	if filter.ClientModel != "" {
 		add("client_model = ?", filter.ClientModel)
 	}
+	if filter.ResponseModel != "" {
+		add("response_model = ?", filter.ResponseModel)
+	}
 	if filter.Status != "" {
 		add("status = ?", filter.Status)
 	}
@@ -377,6 +397,20 @@ func buildWhere(filter QueryFilter, includePagination bool) (string, []any) {
 	}
 	if filter.AuthLabel != "" {
 		add("auth_label = ?", filter.AuthLabel)
+	}
+	if filter.AuthType != "" {
+		add("auth_type = ?", filter.AuthType)
+	}
+	if filter.AuthCategory != "" {
+		add("auth_category = ?", filter.AuthCategory)
+	}
+	if filter.Stream != "" {
+		if flag, ok := parseStreamFlag(filter.Stream); ok {
+			add("stream = ?", flag)
+		}
+	}
+	if filter.ReasoningEffort != "" {
+		add("reasoning_effort = ?", filter.ReasoningEffort)
 	}
 	if filter.ClientKeyHash != "" {
 		add("client_key_hash = ?", filter.ClientKeyHash)
@@ -433,14 +467,16 @@ func eventSelectFields(includeRaw bool) string {
 		raw = "COALESCE(provider_error_raw, '')"
 	}
 	return `id, request_id, started_at, completed_at, duration_ms, provider_key, provider_label,
-auth_id, auth_label, auth_index, model, client_model, route, status, http_status,
-upstream_status, prompt_tokens, completion_tokens, total_tokens, reasoning_tokens,
-cached_tokens, client_key_hash, error_stage, error_code, error_message, ` + raw + `, metadata_json`
+auth_id, auth_label, auth_index, auth_type, auth_category, model, client_model,
+response_model, route, stream, status, http_status, upstream_status, prompt_tokens,
+completion_tokens, total_tokens, reasoning_tokens, reasoning_effort, cached_tokens,
+ttft_ms, client_key_hash, error_stage, error_code, error_message, ` + raw + `, metadata_json`
 }
 
 func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
 	var event Event
 	var startedMS, completedMS int64
+	var streamFlag int
 	if err := rows.Scan(
 		&event.ID,
 		&event.RequestID,
@@ -452,9 +488,13 @@ func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
 		&event.AuthID,
 		&event.AuthLabel,
 		&event.AuthIndex,
+		&event.AuthType,
+		&event.AuthCategory,
 		&event.Model,
 		&event.ClientModel,
+		&event.ResponseModel,
 		&event.Route,
+		&streamFlag,
 		&event.Status,
 		&event.HTTPStatus,
 		&event.UpstreamStatus,
@@ -462,7 +502,9 @@ func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
 		&event.CompletionTokens,
 		&event.TotalTokens,
 		&event.ReasoningTokens,
+		&event.ReasoningEffort,
 		&event.CachedTokens,
+		&event.TTFTMS,
 		&event.ClientKeyHash,
 		&event.ErrorStage,
 		&event.ErrorCode,
@@ -472,6 +514,7 @@ func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
 	); err != nil {
 		return Event{}, fmt.Errorf("scan usage event: %w", err)
 	}
+	event.Stream = streamFlag != 0
 	event.StartedAt = time.UnixMilli(startedMS).UTC()
 	event.CompletedAt = time.UnixMilli(completedMS).UTC()
 	if !includeRaw {
@@ -784,7 +827,8 @@ func (s *SQLiteStore) distinctStrings(ctx context.Context, column, where string,
 
 func isAllowedDistinctColumn(column string) bool {
 	switch column {
-	case "provider_label", "model", "client_model", "auth_label", "error_stage", "error_code":
+	case "provider_label", "model", "client_model", "response_model", "auth_label",
+		"auth_type", "auth_category", "reasoning_effort", "error_stage", "error_code":
 		return true
 	default:
 		return false
@@ -1121,7 +1165,10 @@ ORDER BY requests DESC`, args...)
 }
 
 func isUsageRollupCompatible(filter QueryFilter) bool {
-	if filter.RawProvider != "" || filter.ErrorStage != "" || filter.ErrorCode != "" || filter.AuthID != "" || filter.AuthLabel != "" || filter.ClientKeyHash != "" {
+	if filter.RawProvider != "" || filter.ErrorStage != "" || filter.ErrorCode != "" ||
+		filter.AuthID != "" || filter.AuthLabel != "" || filter.ClientKeyHash != "" ||
+		filter.ResponseModel != "" || filter.AuthType != "" || filter.AuthCategory != "" ||
+		filter.Stream != "" || filter.ReasoningEffort != "" {
 		return false
 	}
 	return true
@@ -1144,4 +1191,17 @@ func parseTimeQuery(value string) (*time.Time, error) {
 		}
 	}
 	return nil, fmt.Errorf("invalid time %q", value)
+}
+
+// parseStreamFlag parses a stream filter value into the integer stored in the
+// usage_events.stream column. Accepts true/false, 1/0, and streaming/sync.
+func parseStreamFlag(value string) (int, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "stream", "streaming":
+		return 1, true
+	case "0", "false", "sync", "non-stream", "nonstream":
+		return 0, true
+	default:
+		return 0, false
+	}
 }

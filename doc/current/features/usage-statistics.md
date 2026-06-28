@@ -10,12 +10,15 @@ Persistent events include:
 
 - request ID, timestamps, and duration
 - provider key, provider label, auth ID, auth label, and auth index
-- model, client model, route, and status
+- auth type (`oauth` / `apikey`) and auth category (`provider/authType`, e.g. `gemini-cli/oauth`)
+- model, client model, response model, route, and status
+- stream mode (streaming vs sync)
 - HTTP and upstream status fields
 - prompt, completion, total, reasoning, and cached token counts
+- reasoning effort and first-token latency (TTFT in milliseconds)
 - client key hash
 - failure stage, error code, sanitized error message, and optional raw provider error
-- metadata JSON
+- metadata JSON (carries the credential source identity)
 
 ## SQLite Store
 
@@ -29,7 +32,7 @@ Relative `usage.sqlite-path` values resolve beside the active config file. The d
 
 The management usage handler exposes event, summary, failure, filter, and metric endpoints under both `/usage` and `/api/usage` inside `/v0/management`.
 
-Supported query dimensions include statistics provider identity, raw provider key, provider label, model, client model, status, error stage, error code, auth ID, auth label, client key hash, and date range.
+Supported query dimensions include statistics provider identity, raw provider key, provider label, model, client model, response model, status, error stage, error code, auth ID, auth label, auth type, auth category, stream mode, reasoning effort, client key hash, and date range.
 
 Metrics include:
 
@@ -50,3 +53,14 @@ Stream wrappers can mark a request-scoped failure override after an upstream str
 Usage records keep stable provider keys, auth IDs, auth labels, and auth indexes on each raw event. Aggregated usage views use the persisted statistics provider identity: non-empty provider labels are grouped as one provider, and records without a distinct label fall back to their auth index before the provider key. Built-in provider configs and OpenAI-compatible provider configs support optional labels. A `usage.provider-labels` map can override labels for providers that do not expose credential-specific names.
 
 Filter option responses expose the same statistics provider identity as the provider key, plus display labels, auth IDs, and auth positions where available. Selecting a provider label filters all matching provider indexes together through the `provider` query parameter; callers that need the original stored provider key can use `raw_provider`.
+
+## Request Lifecycle Fields
+
+Each usage event captures the full request lifecycle:
+
+- **Auth type** (`auth_type`) — the credential kind: `oauth` or `apikey`.
+- **Auth category** (`auth_category`) — composite `provider/authType` string (e.g. `gemini-cli/oauth`, `openai-compat/apikey`) for cross-provider credential grouping.
+- **Stream mode** (`stream`) — `1` for SSE streaming requests, `0` for synchronous requests.
+- **Response model** (`response_model`) — the model name returned by the upstream provider in its response body or first stream chunk. Empty for providers whose responses omit a model field (e.g. Gemini family).
+- **Reasoning effort** (`reasoning_effort`) — the translated upstream thinking level applied to the request.
+- **First-token latency** (`ttft_ms`) — time in milliseconds from HTTP request dispatch to the first response byte, measured by the usage reporter's HTTP transport wrapper.

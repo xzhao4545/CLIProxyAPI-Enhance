@@ -186,6 +186,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	reporter.SetStream(true)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
@@ -373,6 +374,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		eventType := gjson.GetBytes(payload, "type").String()
 		if eventType == "response.completed" {
 			if detail, ok := helps.ParseCodexUsage(payload); ok {
+				reporter.SetResponseModel(helps.ExtractCodexResponseModel(payload))
 				reporter.Publish(ctx, detail)
 			}
 			var param any
@@ -400,6 +402,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 
 	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	reporter.SetStream(true)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
@@ -630,6 +633,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			eventType := gjson.GetBytes(payload, "type").String()
 			if eventType == "response.completed" || eventType == "response.done" {
 				if detail, ok := helps.ParseCodexUsage(payload); ok {
+					reporter.SetResponseModel(helps.ExtractCodexResponseModel(payload))
 					reporter.Publish(ctx, detail)
 				}
 			}

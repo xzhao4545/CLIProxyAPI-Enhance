@@ -113,11 +113,13 @@ func (s *SQLiteStore) InsertEvent(ctx context.Context, event Event) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO usage_events (
 	request_id, started_at, completed_at, duration_ms, provider_key, provider_label,
-	stats_provider_key, stats_provider_label, auth_id, auth_label, auth_index, model,
-	client_model, route, status, http_status, upstream_status, prompt_tokens,
-	completion_tokens, total_tokens, reasoning_tokens, cached_tokens, client_key_hash,
-	error_stage, error_code, error_message, provider_error_raw, metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	stats_provider_key, stats_provider_label, auth_id, auth_label, auth_index,
+	auth_type, auth_category, model, client_model, response_model, route, stream,
+	status, http_status, upstream_status, prompt_tokens, completion_tokens,
+	total_tokens, reasoning_tokens, reasoning_effort, cached_tokens, ttft_ms,
+	client_key_hash, error_stage, error_code, error_message, provider_error_raw,
+	metadata_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.RequestID,
 		event.StartedAt.UTC().UnixMilli(),
 		event.CompletedAt.UTC().UnixMilli(),
@@ -129,9 +131,13 @@ INSERT INTO usage_events (
 		event.AuthID,
 		event.AuthLabel,
 		event.AuthIndex,
+		event.AuthType,
+		event.AuthCategory,
 		event.Model,
 		event.ClientModel,
+		event.ResponseModel,
 		event.Route,
+		streamFlag(event.Stream),
 		event.Status,
 		event.HTTPStatus,
 		event.UpstreamStatus,
@@ -139,7 +145,9 @@ INSERT INTO usage_events (
 		event.CompletionTokens,
 		event.TotalTokens,
 		event.ReasoningTokens,
+		event.ReasoningEffort,
 		event.CachedTokens,
+		event.TTFTMS,
 		event.ClientKeyHash,
 		event.ErrorStage,
 		event.ErrorCode,
@@ -183,6 +191,12 @@ func (s *SQLiteStore) ensureUsageEventColumns(ctx context.Context) error {
 	migrations := map[string]string{
 		"stats_provider_key":   "ALTER TABLE usage_events ADD COLUMN stats_provider_key TEXT NOT NULL DEFAULT ''",
 		"stats_provider_label": "ALTER TABLE usage_events ADD COLUMN stats_provider_label TEXT NOT NULL DEFAULT ''",
+		"auth_type":            "ALTER TABLE usage_events ADD COLUMN auth_type TEXT NOT NULL DEFAULT ''",
+		"auth_category":        "ALTER TABLE usage_events ADD COLUMN auth_category TEXT NOT NULL DEFAULT ''",
+		"response_model":       "ALTER TABLE usage_events ADD COLUMN response_model TEXT NOT NULL DEFAULT ''",
+		"stream":               "ALTER TABLE usage_events ADD COLUMN stream INTEGER NOT NULL DEFAULT 0",
+		"reasoning_effort":     "ALTER TABLE usage_events ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''",
+		"ttft_ms":              "ALTER TABLE usage_events ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0",
 	}
 	for column, statement := range migrations {
 		if _, exists := columns[column]; exists {
@@ -325,4 +339,11 @@ func eventStatsProviderIdentity(event Event) (string, string) {
 		key = authIndex
 	}
 	return key, label
+}
+
+func streamFlag(stream bool) int {
+	if stream {
+		return 1
+	}
+	return 0
 }
