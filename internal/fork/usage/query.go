@@ -302,13 +302,15 @@ SELECT COUNT(*),
 	COALESCE(SUM(completion_tokens), 0),
 	COALESCE(SUM(reasoning_tokens), 0),
 	COALESCE(SUM(cached_tokens), 0),
+	COALESCE(SUM(cache_read_tokens), 0),
+	COALESCE(SUM(cache_creation_tokens), 0),
 	COALESCE(SUM(total_tokens), 0)
 FROM usage_events`+where, args...)
-	if err := row.Scan(&m.TotalRequests, &m.SuccessfulRequests, &m.FailedRequests, &m.TotalPromptTokens, &m.TotalCompletionTokens, &m.TotalReasoningTokens, &m.TotalCachedTokens, &m.TotalTokens); err != nil {
+	if err := row.Scan(&m.TotalRequests, &m.SuccessfulRequests, &m.FailedRequests, &m.TotalPromptTokens, &m.TotalCompletionTokens, &m.TotalReasoningTokens, &m.TotalCachedTokens, &m.TotalCacheReadTokens, &m.TotalCacheCreationTokens, &m.TotalTokens); err != nil {
 		return Metrics{}, fmt.Errorf("query usage metrics totals: %w", err)
 	}
 	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
-	m.CacheHitRate = cacheHitRate(m.TotalCachedTokens, m.TotalPromptTokens)
+	m.CacheHitRate = cacheHitRate(m.TotalCacheReadTokens, m.TotalPromptTokens)
 	m.RPM = float64(m.TotalRequests) / m.WindowMinutes
 	m.TPM = float64(m.TotalTokens) / m.WindowMinutes
 
@@ -471,7 +473,8 @@ func eventSelectFields(includeRaw bool) string {
 auth_id, auth_label, auth_index, auth_type, auth_category, model, client_model,
 response_model, route, stream, status, http_status, upstream_status, prompt_tokens,
 completion_tokens, total_tokens, reasoning_tokens, reasoning_effort, cached_tokens,
-ttft_ms, client_key_hash, error_stage, error_code, error_message, ` + raw + `, metadata_json`
+cache_read_tokens, cache_creation_tokens, ttft_ms, client_key_hash, error_stage,
+error_code, error_message, ` + raw + `, metadata_json`
 }
 
 func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
@@ -505,6 +508,8 @@ func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
 		&event.ReasoningTokens,
 		&event.ReasoningEffort,
 		&event.CachedTokens,
+		&event.CacheReadTokens,
+		&event.CacheCreationTokens,
 		&event.TTFTMS,
 		&event.ClientKeyHash,
 		&event.ErrorStage,
@@ -871,7 +876,9 @@ SELECT `+providerStatsKeySQL()+` AS provider_key,
 	SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successful,
 	COALESCE(SUM(total_tokens), 0) AS tokens,
 	COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-	COALESCE(SUM(cached_tokens), 0) AS cached_tokens
+	COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+	COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+	COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens
 FROM usage_events`+where+`
 GROUP BY 1, 2
 ORDER BY requests DESC`, args...)
@@ -882,12 +889,12 @@ ORDER BY requests DESC`, args...)
 	var out []ProviderMetric
 	for rows.Next() {
 		var item ProviderMetric
-		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.AuthID, &item.Requests, &item.Successful, &item.Tokens, &item.PromptTokens, &item.CachedTokens); err != nil {
+		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.AuthID, &item.Requests, &item.Successful, &item.Tokens, &item.PromptTokens, &item.CachedTokens, &item.CacheReadTokens, &item.CacheCreationTokens); err != nil {
 			return nil, fmt.Errorf("scan usage provider metrics: %w", err)
 		}
 		item.Failed = item.Requests - item.Successful
 		item.SuccessRate = successRate(item.Successful, item.Requests)
-		item.CacheHitRate = cacheHitRate(item.CachedTokens, item.PromptTokens)
+		item.CacheHitRate = cacheHitRate(item.CacheReadTokens, item.PromptTokens)
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -940,14 +947,16 @@ SELECT COALESCE(SUM(requests), 0),
 	COALESCE(SUM(completion_tokens), 0),
 	COALESCE(SUM(reasoning_tokens), 0),
 	COALESCE(SUM(cached_tokens), 0),
+	COALESCE(SUM(cache_read_tokens), 0),
+	COALESCE(SUM(cache_creation_tokens), 0),
 	COALESCE(SUM(total_tokens), 0)
 FROM usage_rollup_hourly`+where, args...)
 	m := base
-	if err := row.Scan(&m.TotalRequests, &m.SuccessfulRequests, &m.FailedRequests, &m.TotalPromptTokens, &m.TotalCompletionTokens, &m.TotalReasoningTokens, &m.TotalCachedTokens, &m.TotalTokens); err != nil {
+	if err := row.Scan(&m.TotalRequests, &m.SuccessfulRequests, &m.FailedRequests, &m.TotalPromptTokens, &m.TotalCompletionTokens, &m.TotalReasoningTokens, &m.TotalCachedTokens, &m.TotalCacheReadTokens, &m.TotalCacheCreationTokens, &m.TotalTokens); err != nil {
 		return Metrics{}, fmt.Errorf("query usage metrics rollup totals: %w", err)
 	}
 	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
-	m.CacheHitRate = cacheHitRate(m.TotalCachedTokens, m.TotalPromptTokens)
+	m.CacheHitRate = cacheHitRate(m.TotalCacheReadTokens, m.TotalPromptTokens)
 	m.RPM = float64(m.TotalRequests) / m.WindowMinutes
 	m.TPM = float64(m.TotalTokens) / m.WindowMinutes
 
@@ -1001,6 +1010,8 @@ func resetMetricsAggregates(m *Metrics) {
 	m.TotalCompletionTokens = 0
 	m.TotalReasoningTokens = 0
 	m.TotalCachedTokens = 0
+	m.TotalCacheReadTokens = 0
+	m.TotalCacheCreationTokens = 0
 	m.TotalTokens = 0
 	m.RPM = 0
 	m.TPM = 0
@@ -1019,6 +1030,8 @@ func mergeMetricsInto(target *Metrics, incoming Metrics) {
 	target.TotalCompletionTokens += incoming.TotalCompletionTokens
 	target.TotalReasoningTokens += incoming.TotalReasoningTokens
 	target.TotalCachedTokens += incoming.TotalCachedTokens
+	target.TotalCacheReadTokens += incoming.TotalCacheReadTokens
+	target.TotalCacheCreationTokens += incoming.TotalCacheCreationTokens
 	target.TotalTokens += incoming.TotalTokens
 	target.ProviderSuccessRates = mergeProviderMetrics(target.ProviderSuccessRates, incoming.ProviderSuccessRates)
 	target.ProviderRequestTotals = target.ProviderSuccessRates
@@ -1029,7 +1042,7 @@ func mergeMetricsInto(target *Metrics, incoming Metrics) {
 
 func finalizeMetrics(m *Metrics) {
 	m.SuccessRate = successRate(m.SuccessfulRequests, m.TotalRequests)
-	m.CacheHitRate = cacheHitRate(m.TotalCachedTokens, m.TotalPromptTokens)
+	m.CacheHitRate = cacheHitRate(m.TotalCacheReadTokens, m.TotalPromptTokens)
 	if m.WindowMinutes <= 0 {
 		m.WindowMinutes = 1
 	}
@@ -1065,6 +1078,8 @@ func mergeProviderMetrics(existing, incoming []ProviderMetric) []ProviderMetric 
 		target.Tokens += item.Tokens
 		target.PromptTokens += item.PromptTokens
 		target.CachedTokens += item.CachedTokens
+		target.CacheReadTokens += item.CacheReadTokens
+		target.CacheCreationTokens += item.CacheCreationTokens
 	}
 	for _, item := range existing {
 		add(item)
@@ -1076,7 +1091,7 @@ func mergeProviderMetrics(existing, incoming []ProviderMetric) []ProviderMetric 
 	for _, key := range order {
 		item := *merged[key]
 		item.SuccessRate = successRate(item.Successful, item.Requests)
-		item.CacheHitRate = cacheHitRate(item.CachedTokens, item.PromptTokens)
+		item.CacheHitRate = cacheHitRate(item.CacheReadTokens, item.PromptTokens)
 		out = append(out, item)
 	}
 	return out
@@ -1135,7 +1150,9 @@ SELECT stats_provider_key, stats_provider_label,
 	COALESCE(SUM(successful_requests), 0) AS successful,
 	COALESCE(SUM(total_tokens), 0) AS tokens,
 	COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-	COALESCE(SUM(cached_tokens), 0) AS cached_tokens
+	COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+	COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+	COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens
 FROM usage_rollup_hourly`+where+`
 GROUP BY stats_provider_key, stats_provider_label
 ORDER BY requests DESC`, args...)
@@ -1146,12 +1163,12 @@ ORDER BY requests DESC`, args...)
 	var out []ProviderMetric
 	for rows.Next() {
 		var item ProviderMetric
-		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.Requests, &item.Successful, &item.Tokens, &item.PromptTokens, &item.CachedTokens); err != nil {
+		if err := rows.Scan(&item.ProviderKey, &item.ProviderLabel, &item.Requests, &item.Successful, &item.Tokens, &item.PromptTokens, &item.CachedTokens, &item.CacheReadTokens, &item.CacheCreationTokens); err != nil {
 			return nil, fmt.Errorf("scan usage provider metrics rollup: %w", err)
 		}
 		item.Failed = item.Requests - item.Successful
 		item.SuccessRate = successRate(item.Successful, item.Requests)
-		item.CacheHitRate = cacheHitRate(item.CachedTokens, item.PromptTokens)
+		item.CacheHitRate = cacheHitRate(item.CacheReadTokens, item.PromptTokens)
 		out = append(out, item)
 	}
 	return out, rows.Err()

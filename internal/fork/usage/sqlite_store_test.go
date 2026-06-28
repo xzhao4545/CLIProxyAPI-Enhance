@@ -187,6 +187,54 @@ func TestSQLiteStoreMetricsAndFilters(t *testing.T) {
 	requireContains(t, options.ErrorCodes, "read_failed")
 }
 
+func TestSQLiteStoreCacheHitRateUsesReadTokensOnly(t *testing.T) {
+	store := openTestStore(t)
+	defer closeTestStore(t, store)
+
+	base := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	mustInsertEvent(t, store, Event{
+		StartedAt:           base,
+		CompletedAt:         base,
+		ProviderKey:         "claude",
+		ProviderLabel:       "Claude",
+		Model:               "claude-sonnet",
+		Status:              StatusSuccess,
+		PromptTokens:        100,
+		CompletionTokens:    20,
+		TotalTokens:         120,
+		CachedTokens:        30,
+		CacheCreationTokens: 30,
+	})
+	mustInsertEvent(t, store, Event{
+		StartedAt:        base.Add(time.Minute),
+		CompletedAt:      base.Add(time.Minute),
+		ProviderKey:      "claude",
+		ProviderLabel:    "Claude",
+		Model:            "claude-sonnet",
+		Status:           StatusSuccess,
+		PromptTokens:     50,
+		CompletionTokens: 10,
+		TotalTokens:      60,
+		CachedTokens:     10,
+		CacheReadTokens:  10,
+	})
+
+	metrics, err := store.QueryMetrics(QueryFilter{DateFrom: ptrTime(base), DateTo: ptrTime(base.Add(time.Hour))})
+	if err != nil {
+		t.Fatalf("QueryMetrics() error = %v", err)
+	}
+	if metrics.TotalCachedTokens != 40 || metrics.TotalCacheReadTokens != 10 || metrics.TotalCacheCreationTokens != 30 {
+		t.Fatalf("cache token totals = %+v", metrics)
+	}
+	if metrics.CacheHitRate != float64(10)/float64(150) {
+		t.Fatalf("cache hit rate = %v, want %v", metrics.CacheHitRate, float64(10)/float64(150))
+	}
+	provider := requireProviderMetric(t, metrics.ProviderRequestTotals, "Claude")
+	if provider.CachedTokens != 40 || provider.CacheReadTokens != 10 || provider.CacheCreationTokens != 30 || provider.CacheHitRate != float64(10)/float64(150) {
+		t.Fatalf("provider cache metrics = %+v", provider)
+	}
+}
+
 func TestSQLiteStoreNewColumnsRoundTripAndFilter(t *testing.T) {
 	store := openTestStore(t)
 	defer closeTestStore(t, store)

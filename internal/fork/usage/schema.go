@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
 	reasoning_tokens INTEGER NOT NULL DEFAULT 0,
 	reasoning_effort TEXT NOT NULL DEFAULT '',
 	cached_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
 	ttft_ms INTEGER NOT NULL DEFAULT 0,
 	client_key_hash TEXT,
 	error_stage TEXT,
@@ -54,6 +56,8 @@ CREATE TABLE IF NOT EXISTS usage_rollup_hourly (
 	total_tokens INTEGER NOT NULL DEFAULT 0,
 	reasoning_tokens INTEGER NOT NULL DEFAULT 0,
 	cached_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (bucket_start, stats_provider_key, model, client_model, status)
 );
 

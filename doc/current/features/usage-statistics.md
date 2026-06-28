@@ -14,7 +14,7 @@ Persistent events include:
 - model, client model, response model, route, and status
 - stream mode (streaming vs sync)
 - HTTP and upstream status fields
-- prompt, completion, total, reasoning, and cached token counts
+- prompt, completion, total, reasoning, cached, cache-read, and cache-creation token counts
 - reasoning effort and first-token latency (TTFT in milliseconds)
 - client key hash
 - failure stage, error code, sanitized error message, and optional raw provider error
@@ -38,7 +38,7 @@ Metrics include:
 
 - total requests, successes, failures, and success rate
 - prompt, completion, reasoning, cached, and total tokens
-- cache hit rate, calculated as cached input tokens divided by prompt tokens
+- cache hit rate, calculated as cache-read input tokens divided by prompt tokens; cache-creation tokens are stored but do not count as hits
 - RPM and TPM over the selected time window
 - provider request, token, and success-rate metrics
 - model request and token metrics

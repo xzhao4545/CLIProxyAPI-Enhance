@@ -115,7 +115,7 @@ order
 
 `provider` matches the usage statistics provider identity returned by filter options. `raw_provider` matches the original raw `provider_key` stored on usage events.
 
-`filters` returns provider options with statistics keys, display labels, auth IDs, and auth positions when available. `metrics` returns request, token, cache hit rate, RPM, TPM, provider, and model aggregates for the selected window. Cache hit rate is reported as `cache_hit_rate` and is calculated from cached input tokens divided by prompt tokens; provider metric rows include the same field.
+`filters` returns provider options with statistics keys, display labels, auth IDs, and auth positions when available. `metrics` returns request, token, cache hit rate, RPM, TPM, provider, and model aggregates for the selected window. Cache hit rate is reported as `cache_hit_rate` and is calculated from cache-read input tokens divided by prompt tokens; cache-creation tokens are exposed separately and do not count as hits. Provider metric rows include the same cache hit rate field.
 
 ## Management Panel Routes
 

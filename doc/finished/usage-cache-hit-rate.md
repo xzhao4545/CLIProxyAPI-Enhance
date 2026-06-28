@@ -6,8 +6,9 @@ Usage metrics now expose cache hit rate for the selected statistics window and f
 
 ## Behavior
 
-- `metrics.cache_hit_rate` reports total cached input tokens divided by total prompt tokens.
-- Provider metric rows include `prompt_tokens`, `cached_tokens`, and `cache_hit_rate`.
+- `metrics.cache_hit_rate` reports total cache-read input tokens divided by total prompt tokens.
+- Cache-creation tokens are tracked separately and do not count as hits.
+- Provider metric rows include `prompt_tokens`, `cached_tokens`, `cache_read_tokens`, `cache_creation_tokens`, and `cache_hit_rate`.
 - Raw, hourly rollup, and mixed rollup metric queries use the same calculation.
 - The management panel can display the overall cache hit rate in the top statistics cards and per-provider hit rate on provider cards.
 
