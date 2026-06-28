@@ -207,6 +207,28 @@ func TestUsageReporterBuildRecordIncludesReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestUsageReporterSetTranslatedReasoningEffortPreservesContextValue(t *testing.T) {
+	ctx := usage.WithReasoningEffort(context.Background(), "max")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	reporter.SetTranslatedReasoningEffort([]byte(`{"model":"gpt-5.4"}`), "openai")
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+	if record.ReasoningEffort != "max" {
+		t.Fatalf("reasoning effort = %q, want %q (context value should be preserved when translated extraction is empty)", record.ReasoningEffort, "max")
+	}
+}
+
+func TestUsageReporterSetTranslatedReasoningEffortOverridesWhenNonEmpty(t *testing.T) {
+	ctx := usage.WithReasoningEffort(context.Background(), "low")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	reporter.SetTranslatedReasoningEffort([]byte(`{"reasoning_effort":"high"}`), "openai")
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+	if record.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort = %q, want %q (translated value should override context)", record.ReasoningEffort, "high")
+	}
+}
+
 func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	reporter := &UsageReporter{
 		provider:    "codex",

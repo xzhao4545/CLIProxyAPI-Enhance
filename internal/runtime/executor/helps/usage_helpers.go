@@ -82,7 +82,11 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 	if r == nil {
 		return
 	}
-	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+	translated := thinking.ExtractTranslatedReasoningEffort(payload, format)
+	if translated == "" {
+		return
+	}
+	r.reasoning = translated
 }
 
 // SetStream marks this reporter as serving a streaming (SSE) request.
