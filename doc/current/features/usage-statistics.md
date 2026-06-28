@@ -26,6 +26,8 @@ The SQLite store creates an append-only `usage_events` table with indexes for fi
 
 The store also maintains an hourly `usage_rollup_hourly` table. Each inserted usage event updates the matching hourly bucket in the same SQLite transaction as the raw event insert. Existing databases backfill statistics provider identity fields on startup, and an empty hourly rollup table is populated from existing raw events. Aggregate queries use a mixed plan when their filters can be represented by rollup dimensions: complete hours are read from `usage_rollup_hourly`, while non-hour-aligned range heads and tails are read from `usage_events` and merged in memory. Queries with unsupported fine-grained filters fall back to `usage_events` to preserve exact results. Recent request lists and failure-detail queries continue to read raw events.
 
+Existing databases that predate cache-read and cache-creation columns keep historical `cache_read_tokens` and `cache_creation_tokens` at `0` because old `cached_tokens` values cannot reliably distinguish cache reads from cache creation. New records persist the split fields, and cache hit rate is calculated only from cache-read tokens.
+
 Relative `usage.sqlite-path` values resolve beside the active config file. The default file name is `usage.sqlite3`.
 
 ## Query API
