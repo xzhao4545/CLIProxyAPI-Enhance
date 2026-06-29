@@ -69,3 +69,7 @@ Management routes are under `/v0/management`:
 - `GET /codex-response-retry-filter/hits`
 
 Stats include attempts, hits, hit rate, retry success rate, internal retries, conductor retries, observe-only hits, and breakdowns by model, auth, reasoning-token length, and action.
+
+## Management Panel
+
+The management panel includes a dedicated `/codex-retry-filter` page in the Observe navigation group. The page manages the enable switch, model patterns, reasoning-token lengths, streaming and non-streaming intercept switches, and guard retry attempts. It also displays attempts, hits, hit rate, retry success rate, internal retry count, conductor retry count, observe-only hits, breakdown tables, and recent hit rows.
