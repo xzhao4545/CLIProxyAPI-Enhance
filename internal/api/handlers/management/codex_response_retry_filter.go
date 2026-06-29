@@ -1,6 +1,7 @@
 package management
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,6 +37,10 @@ func (h *Handler) PutCodexResponseRetryFilter(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body, expected {\"codex-response-retry-filter\": {...}}"})
 		return
 	}
+	if err := validateExplicitCodexRetryFilterBody(body.Config); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	runtime := codexretryfilter.Normalize(h.cfg.CodexResponseRetryFilter)
 	applyCodexRetryFilterBody(&runtime, body.Config)
 	if err := codexretryfilter.Validate(runtime); err != nil {
@@ -53,6 +58,10 @@ func (h *Handler) PatchCodexResponseRetryFilter(c *gin.Context) {
 	var body codexRetryFilterConfigBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if err := validateExplicitCodexRetryFilterBody(body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	runtime := codexretryfilter.Normalize(h.cfg.CodexResponseRetryFilter)
@@ -115,6 +124,32 @@ func applyCodexRetryFilterBody(runtime *codexretryfilter.RuntimeConfig, body cod
 	if body.GuardRetryAttempts != nil {
 		runtime.GuardRetryAttempts = *body.GuardRetryAttempts
 	}
+}
+
+func validateExplicitCodexRetryFilterBody(body codexRetryFilterConfigBody) error {
+	if body.Models != nil {
+		hasModel := false
+		for _, model := range body.Models {
+			if strings.TrimSpace(model) != "" {
+				hasModel = true
+				break
+			}
+		}
+		if !hasModel {
+			return fmt.Errorf("models must contain at least one non-empty pattern")
+		}
+	}
+	if body.ReasoningTokenLengths != nil {
+		if len(body.ReasoningTokenLengths) == 0 {
+			return fmt.Errorf("reasoning-token-lengths must contain at least one positive integer")
+		}
+		for _, length := range body.ReasoningTokenLengths {
+			if length <= 0 {
+				return fmt.Errorf("reasoning-token-lengths must contain positive integers")
+			}
+		}
+	}
+	return nil
 }
 
 func parseCodexRetryFilterQuery(c *gin.Context) (codexretryfilter.QueryFilter, bool) {

@@ -48,6 +48,32 @@ func TestPatchCodexResponseRetryFilterRejectsNoInterceptModes(t *testing.T) {
 	}
 }
 
+func TestPatchCodexResponseRetryFilterRejectsExplicitEmptyModels(t *testing.T) {
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	c, rec := managementTestContext(http.MethodPatch, "/v0/management/codex-response-retry-filter", `{
+		"models": []
+	}`)
+
+	h.PatchCodexResponseRetryFilter(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPatchCodexResponseRetryFilterRejectsInvalidReasoningLengths(t *testing.T) {
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	c, rec := managementTestContext(http.MethodPatch, "/v0/management/codex-response-retry-filter", `{
+		"reasoning-token-lengths": [516, -1]
+	}`)
+
+	h.PatchCodexResponseRetryFilter(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCodexResponseRetryFilterStatsAndHits(t *testing.T) {
 	ctx := context.Background()
 	store, err := codexretryfilter.OpenStore(ctx, ":memory:")
