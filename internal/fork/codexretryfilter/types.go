@@ -1,6 +1,9 @@
 package codexretryfilter
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type AttemptRecord struct {
 	RequestID           string
@@ -87,4 +90,9 @@ type Stats struct {
 	ByAuth                 []Breakdown          `json:"by_auth"`
 	ByReasoningTokens      []ReasoningBreakdown `json:"by_reasoning_tokens"`
 	ByAction               []ActionBreakdown    `json:"by_action"`
+}
+
+type QueryService interface {
+	QueryStats(ctx context.Context, filter QueryFilter) (Stats, error)
+	QueryHits(ctx context.Context, filter QueryFilter) ([]HitRecord, error)
 }

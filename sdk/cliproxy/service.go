@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fork/codexretryfilter"
 	forkusage "github.com/router-for-me/CLIProxyAPI/v7/internal/fork/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
@@ -100,7 +101,8 @@ type Service struct {
 	homeClient *home.Client
 	homeCancel context.CancelFunc
 
-	usageRecorder *forkusage.Recorder
+	usageRecorder         *forkusage.Recorder
+	codexRetryFilterStore *codexretryfilter.Store
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -767,6 +769,16 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	usage.StartDefault(ctx)
+	if s.codexRetryFilterStore == nil {
+		path := forkusage.ResolveSQLitePath(forkusage.FromAppConfig(s.cfg).SQLitePath, s.configPath)
+		store, errStore := codexretryfilter.OpenStore(ctx, path)
+		if errStore != nil {
+			log.Warnf("failed to initialize codex response retry filter sqlite store: %v", errStore)
+		} else {
+			s.codexRetryFilterStore = store
+			codexretryfilter.SetDefaultStore(store)
+		}
+	}
 	if s.usageRecorder == nil {
 		recorder, errUsage := forkusage.NewRecorderFromConfig(ctx, forkusage.FromAppConfig(s.cfg), s.configPath)
 		if errUsage != nil {
@@ -828,6 +840,9 @@ func (s *Service) Run(ctx context.Context) error {
 	serverOptions := append([]api.ServerOption(nil), s.serverOptions...)
 	if s.usageRecorder != nil {
 		serverOptions = append(serverOptions, api.WithUsageQueryService(s.usageRecorder))
+	}
+	if s.codexRetryFilterStore != nil {
+		serverOptions = append(serverOptions, api.WithCodexRetryFilterQueryService(s.codexRetryFilterStore))
 	}
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, serverOptions...)
 
@@ -1050,6 +1065,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 			s.usageRecorder = nil
+		}
+		if s.codexRetryFilterStore != nil {
+			if err := s.codexRetryFilterStore.Close(); err != nil {
+				log.Errorf("failed to close codex response retry filter sqlite store: %v", err)
+				if shutdownErr == nil {
+					shutdownErr = err
+				}
+			}
+			s.codexRetryFilterStore = nil
 		}
 	})
 	return shutdownErr
