@@ -432,6 +432,7 @@ nonStreamRetryLoop:
 					action := codexretryfilter.DecideAction(match, filterCfg.InterceptNonStreaming, remainingFilterRetries)
 					codexretryfilter.RecordAttemptBestEffort(filterCtx, codexRetryFilterAttemptRecord(filterRequestID, auth, baseModel, req.Model, responseModel, false, reasoningTokens, match, action, remainingFilterRetries, filterAttempt))
 					if action == codexretryfilter.ActionInternalRetry {
+						reporter.ResetTTFT()
 						remainingFilterRetries--
 						filterAttempt++
 						continue nonStreamRetryLoop
@@ -664,6 +665,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return nil, err
 			}
 			if retry {
+				reporter.ResetTTFT()
 				remainingFilterRetries--
 				filterAttempt++
 				continue streamRetryLoop

@@ -95,3 +95,12 @@ type StatusError interface {
 	error
 	StatusCode() int
 }
+
+// RetryableAuthFailure marks a provider execution failure that should try the
+// next auth without mutating quota, cooldown, or fallback state for the current
+// auth. This is for synthetic proxy-side retry signals rather than upstream
+// provider health failures.
+type RetryableAuthFailure interface {
+	error
+	RetryableAuthFailure() bool
+}

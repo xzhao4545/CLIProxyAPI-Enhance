@@ -214,9 +214,10 @@ func (s *Store) QueryStats(ctx context.Context, filter QueryFilter) (Stats, erro
 		ctx = context.Background()
 	}
 	filter = normalizeQueryFilter(filter)
-	where, args := buildWhere(filter)
+	attemptsWhere, attemptsArgs := buildAttemptWhere(filter)
+	hitsWhere, hitsArgs := buildWhere(filter)
 	var stats Stats
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_response_retry_filter_attempts`+where, args...).Scan(&stats.Attempts); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_response_retry_filter_attempts`+attemptsWhere, attemptsArgs...).Scan(&stats.Attempts); err != nil {
 		return Stats{}, fmt.Errorf("count codex retry filter attempts: %w", err)
 	}
 	if err := s.db.QueryRowContext(ctx, `
@@ -226,8 +227,8 @@ SELECT
 	COALESCE(SUM(CASE WHEN action = ? THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(CASE WHEN action = ? THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(CASE WHEN action = ? THEN 1 ELSE 0 END), 0)
-FROM codex_response_retry_filter_hits`+where,
-		append([]any{ActionInternalRetry, ActionConductorRetry, ActionObserveOnly}, args...)...).Scan(
+FROM codex_response_retry_filter_hits`+hitsWhere,
+		append([]any{ActionInternalRetry, ActionConductorRetry, ActionObserveOnly}, hitsArgs...)...).Scan(
 		&stats.Hits,
 		&stats.FinalSuccessesAfterHit,
 		&stats.InternalRetries,

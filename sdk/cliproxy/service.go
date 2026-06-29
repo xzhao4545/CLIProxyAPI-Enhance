@@ -773,6 +773,7 @@ func (s *Service) Run(ctx context.Context) error {
 		path := forkusage.ResolveSQLitePath(forkusage.FromAppConfig(s.cfg).SQLitePath, s.configPath)
 		store, errStore := codexretryfilter.OpenStore(ctx, path)
 		if errStore != nil {
+			codexretryfilter.ClearDefaultStore(nil)
 			log.Warnf("failed to initialize codex response retry filter sqlite store: %v", errStore)
 		} else {
 			s.codexRetryFilterStore = store
@@ -1067,6 +1068,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.usageRecorder = nil
 		}
 		if s.codexRetryFilterStore != nil {
+			codexretryfilter.ClearDefaultStore(s.codexRetryFilterStore)
 			if err := s.codexRetryFilterStore.Close(); err != nil {
 				log.Errorf("failed to close codex response retry filter sqlite store: %v", err)
 				if shutdownErr == nil {

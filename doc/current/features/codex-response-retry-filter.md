@@ -36,11 +36,11 @@ When enabled, at least one intercept mode must stay enabled.
 
 ## Runtime Behavior
 
-Non-streaming eligible attempts are inspected at `response.completed`. Matching attempts consume the feature-owned retry budget first and retry the same selected Codex execution path. After the feature-owned budget is exhausted, the executor returns a retryable 429-style filter error so the existing auth conductor can try another candidate if available.
+Non-streaming eligible attempts are inspected at `response.completed`. Matching attempts consume the feature-owned retry budget first and retry the same selected Codex execution path. After the feature-owned budget is exhausted, the executor returns a synthetic retryable auth failure so the existing auth conductor can try another candidate if available without marking the current auth or model as quota-exhausted.
 
 Streaming eligible attempts with `intercept-streaming: true` are strictly buffered until `response.completed`. Matching buffered attempts are discarded and retried before any downstream stream chunks are returned. Non-matching buffered attempts are emitted in original translated order.
 
-Ordinary upstream HTTP errors, transport failures, context-length errors, and auth failures do not consume the feature-owned rule retry budget unless a matching completed event was inspected.
+Ordinary upstream HTTP errors, transport failures, context-length errors, and auth failures do not consume the feature-owned rule retry budget unless a matching completed event was inspected. The synthetic filter failure is not eligible for Antigravity credits fallback and does not apply auth cooldown or quota backoff.
 
 ## Persistence
 

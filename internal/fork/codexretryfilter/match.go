@@ -87,6 +87,10 @@ func (e RetryError) StatusCode() int {
 	return 429
 }
 
+func (e RetryError) RetryableAuthFailure() bool {
+	return true
+}
+
 func (e RetryError) Match() Match {
 	return e.match
 }

@@ -48,11 +48,28 @@ func TestStoreInsertQueryStatsAndHits(t *testing.T) {
 	pass.RequestID = "req-1"
 	pass.Matched = false
 	pass.MatchedLength = nil
+	passTokens := int64(42)
+	pass.ReasoningTokens = &passTokens
 	pass.Action = ActionPass
 	pass.Attempt = 2
 	pass.GuardRetryRemaining = 1
 	if err := store.InsertAttempt(ctx, pass); err != nil {
 		t.Fatalf("InsertAttempt(pass) error = %v", err)
+	}
+	miss := base
+	miss.RequestID = "req-2"
+	miss.AuthID = "auth-2"
+	miss.AuthLabel = "Secondary"
+	miss.Model = "gpt-4.1-codex"
+	miss.Matched = false
+	miss.MatchedLength = nil
+	missTokens := int64(128)
+	miss.ReasoningTokens = &missTokens
+	miss.Action = ActionPass
+	miss.Attempt = 1
+	miss.GuardRetryRemaining = 0
+	if err := store.InsertAttempt(ctx, miss); err != nil {
+		t.Fatalf("InsertAttempt(miss) error = %v", err)
 	}
 	if err := store.MarkFinalSuccess(ctx, "req-1"); err != nil {
 		t.Fatalf("MarkFinalSuccess() error = %v", err)
@@ -62,11 +79,11 @@ func TestStoreInsertQueryStatsAndHits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryStats() error = %v", err)
 	}
-	if stats.Attempts != 2 || stats.Hits != 1 {
-		t.Fatalf("stats attempts/hits = %d/%d, want 2/1", stats.Attempts, stats.Hits)
+	if stats.Attempts != 3 || stats.Hits != 1 {
+		t.Fatalf("stats attempts/hits = %d/%d, want 3/1", stats.Attempts, stats.Hits)
 	}
-	if stats.HitRate != 0.5 {
-		t.Fatalf("hit rate = %v, want 0.5", stats.HitRate)
+	if stats.HitRate != float64(1)/float64(3) {
+		t.Fatalf("hit rate = %v, want 1/3", stats.HitRate)
 	}
 	if stats.FinalSuccessesAfterHit != 1 || stats.RetrySuccessRate != 1 {
 		t.Fatalf("success stats = %d/%v, want 1/1", stats.FinalSuccessesAfterHit, stats.RetrySuccessRate)
@@ -74,14 +91,29 @@ func TestStoreInsertQueryStatsAndHits(t *testing.T) {
 	if stats.InternalRetries != 1 || stats.ConductorRetries != 0 || stats.ObserveOnlyHits != 0 {
 		t.Fatalf("action counts = %d/%d/%d, want 1/0/0", stats.InternalRetries, stats.ConductorRetries, stats.ObserveOnlyHits)
 	}
-	if len(stats.ByModel) != 1 || stats.ByModel[0].Key != "gpt-5-codex" || stats.ByModel[0].Attempts != 2 || stats.ByModel[0].Hits != 1 {
-		t.Fatalf("by model = %#v, want gpt-5-codex 2/1", stats.ByModel)
+	if len(stats.ByModel) != 2 ||
+		stats.ByModel[0].Key != "gpt-5-codex" || stats.ByModel[0].Attempts != 2 || stats.ByModel[0].Hits != 1 ||
+		stats.ByModel[1].Key != "gpt-4.1-codex" || stats.ByModel[1].Attempts != 1 || stats.ByModel[1].Hits != 0 {
+		t.Fatalf("by model = %#v, want hit and zero-hit attempt rows", stats.ByModel)
+	}
+	if len(stats.ByAuth) != 2 ||
+		stats.ByAuth[0].Key != "auth-1" || stats.ByAuth[0].Label != "Primary" || stats.ByAuth[0].Attempts != 2 || stats.ByAuth[0].Hits != 1 ||
+		stats.ByAuth[1].Key != "auth-2" || stats.ByAuth[1].Label != "Secondary" || stats.ByAuth[1].Attempts != 1 || stats.ByAuth[1].Hits != 0 {
+		t.Fatalf("by auth = %#v, want hit and zero-hit attempt rows", stats.ByAuth)
 	}
 	if len(stats.ByReasoningTokens) != 1 || stats.ByReasoningTokens[0].MatchedLength != 516 || stats.ByReasoningTokens[0].Hits != 1 {
 		t.Fatalf("by reasoning = %#v, want 516/1", stats.ByReasoningTokens)
 	}
 	if len(stats.ByAction) != 1 || stats.ByAction[0].Action != ActionInternalRetry || stats.ByAction[0].Hits != 1 {
 		t.Fatalf("by action = %#v, want internal_retry/1", stats.ByAction)
+	}
+
+	lengthStats, err := store.QueryStats(ctx, QueryFilter{MatchedLength: 516})
+	if err != nil {
+		t.Fatalf("QueryStats(matched_length) error = %v", err)
+	}
+	if lengthStats.Attempts != 1 || lengthStats.Hits != 1 || lengthStats.HitRate != 1 {
+		t.Fatalf("matched length stats = attempts:%d hits:%d rate:%v, want 1/1/1", lengthStats.Attempts, lengthStats.Hits, lengthStats.HitRate)
 	}
 
 	hits, err := store.QueryHits(ctx, QueryFilter{Model: "gpt-5-codex", MatchedLength: 516, Limit: 10})
@@ -131,5 +163,60 @@ func TestStoreStatsActionFilters(t *testing.T) {
 	}
 	if stats.Attempts != 1 || stats.Hits != 1 || stats.ObserveOnlyHits != 1 {
 		t.Fatalf("observe stats = attempts:%d hits:%d observe:%d", stats.Attempts, stats.Hits, stats.ObserveOnlyHits)
+	}
+}
+
+func TestStoreStatsByAuthPreservesRecordedAuthLabels(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	records := []AttemptRecord{
+		{
+			RequestID: "req-default-label",
+			AuthID:    "codex:apikey:6b19d5b7165d",
+			AuthLabel: "codex-apikey",
+			Model:     "gpt-5-codex",
+			Eligible:  true,
+			Action:    ActionPass,
+		},
+		{
+			RequestID: "req-id-label",
+			AuthID:    "codex:apikey:6b19d5b7165e",
+			AuthLabel: "codex:apikey:6b19d5b7165e",
+			Model:     "gpt-5-codex",
+			Eligible:  true,
+			Action:    ActionPass,
+		},
+	}
+	for _, record := range records {
+		if err := store.InsertAttempt(ctx, record); err != nil {
+			t.Fatalf("InsertAttempt(%s) error = %v", record.RequestID, err)
+		}
+	}
+
+	stats, err := store.QueryStats(ctx, QueryFilter{})
+	if err != nil {
+		t.Fatalf("QueryStats() error = %v", err)
+	}
+	if len(stats.ByAuth) != 2 {
+		t.Fatalf("by auth len = %d, want 2: %#v", len(stats.ByAuth), stats.ByAuth)
+	}
+	for _, row := range stats.ByAuth {
+		switch row.Key {
+		case "codex:apikey:6b19d5b7165d":
+			if row.Label != "codex-apikey" {
+				t.Fatalf("by auth row %q label = %q, want codex-apikey", row.Key, row.Label)
+			}
+		case "codex:apikey:6b19d5b7165e":
+			if row.Label != "codex:apikey:6b19d5b7165e" {
+				t.Fatalf("by auth row %q label = %q, want codex:apikey:6b19d5b7165e", row.Key, row.Label)
+			}
+		default:
+			t.Fatalf("unexpected by auth row key %q", row.Key)
+		}
 	}
 }

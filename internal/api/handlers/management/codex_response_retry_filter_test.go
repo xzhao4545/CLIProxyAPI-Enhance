@@ -102,7 +102,7 @@ func TestCodexResponseRetryFilterStatsAndHits(t *testing.T) {
 	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
 	h.SetCodexRetryFilterQueryService(store)
 
-	cStats, recStats := managementTestContext(http.MethodGet, "/v0/management/codex-response-retry-filter/stats?model=gpt-5-codex", "")
+	cStats, recStats := managementTestContext(http.MethodGet, "/v0/management/codex-response-retry-filter/stats?model=gpt-5-codex&matched_length=516", "")
 	h.GetCodexResponseRetryFilterStats(cStats)
 	if recStats.Code != http.StatusOK {
 		t.Fatalf("stats status = %d, want 200: %s", recStats.Code, recStats.Body.String())

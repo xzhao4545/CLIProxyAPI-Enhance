@@ -860,11 +860,9 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			}
 			if chunk.Err != nil && !failed {
 				failed = true
-				rerr := errorForResult(chunk.Err)
-				if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
-					rerr.HTTPStatus = se.StatusCode()
+				if !isRetryableAuthFailure(chunk.Err) {
+					m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: errorForExecutionResult(chunk.Err)})
 				}
-				m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr})
 			}
 			if !forward {
 				return false
@@ -994,13 +992,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				coreusage.FlushFailureOverrideRecords(execCtx)
 				return nil, errCtx
 			}
-			rerr := &Error{Message: errStream.Error()}
-			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errStream); ok && se != nil {
-				rerr.HTTPStatus = se.StatusCode()
+			if !isRetryableAuthFailure(errStream) {
+				m.MarkResult(execCtx, failedExecutionResult(auth.ID, provider, resultModel, errStream))
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-			result.RetryAfter = retryAfterFromError(errStream)
-			m.MarkResult(execCtx, result)
 			coreusage.FlushFailureOverrideRecords(execCtx)
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
@@ -1019,36 +1013,24 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				return nil, errCtx
 			}
 			if isRequestInvalidError(bootstrapErr) {
-				rerr := &Error{Message: bootstrapErr.Error()}
-				if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
-					rerr.HTTPStatus = se.StatusCode()
+				if !isRetryableAuthFailure(bootstrapErr) {
+					m.MarkResult(execCtx, failedExecutionResult(auth.ID, provider, resultModel, bootstrapErr))
 				}
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-				result.RetryAfter = retryAfterFromError(bootstrapErr)
-				m.MarkResult(execCtx, result)
 				discardStreamChunks(streamResult.Chunks)
 				coreusage.FlushFailureOverrideRecords(execCtx)
 				return nil, bootstrapErr
 			}
 			if idx < len(execModels)-1 {
-				rerr := &Error{Message: bootstrapErr.Error()}
-				if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
-					rerr.HTTPStatus = se.StatusCode()
+				if !isRetryableAuthFailure(bootstrapErr) {
+					m.MarkResult(execCtx, failedExecutionResult(auth.ID, provider, resultModel, bootstrapErr))
 				}
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-				result.RetryAfter = retryAfterFromError(bootstrapErr)
-				m.MarkResult(execCtx, result)
 				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
 				continue
 			}
-			rerr := &Error{Message: bootstrapErr.Error()}
-			if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
-				rerr.HTTPStatus = se.StatusCode()
+			if !isRetryableAuthFailure(bootstrapErr) {
+				m.MarkResult(execCtx, failedExecutionResult(auth.ID, provider, resultModel, bootstrapErr))
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-			result.RetryAfter = retryAfterFromError(bootstrapErr)
-			m.MarkResult(execCtx, result)
 			discardStreamChunks(streamResult.Chunks)
 			coreusage.FlushFailureOverrideRecords(execCtx)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
@@ -1535,14 +1517,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
-				result.Error = &Error{Message: errExec.Error()}
-				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
-					result.Error.HTTPStatus = se.StatusCode()
+				if !isRetryableAuthFailure(errExec) {
+					result = failedExecutionResult(auth.ID, provider, resultModel, errExec)
+					m.MarkResult(execCtx, result)
 				}
-				if ra := retryAfterFromError(errExec); ra != nil {
-					result.RetryAfter = ra
-				}
-				m.MarkResult(execCtx, result)
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
@@ -1634,14 +1612,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
-				result.Error = &Error{Message: errExec.Error()}
-				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
-					result.Error.HTTPStatus = se.StatusCode()
+				if !isRetryableAuthFailure(errExec) {
+					result = failedExecutionResult(auth.ID, provider, resultModel, errExec)
+					m.MarkResult(execCtx, result)
 				}
-				if ra := retryAfterFromError(errExec); ra != nil {
-					result.RetryAfter = ra
-				}
-				m.MarkResult(execCtx, result)
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
@@ -2743,6 +2717,44 @@ func statusCodeFromError(err error) int {
 		return sc.StatusCode()
 	}
 	return 0
+}
+
+func isRetryableAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var retryable cliproxyexecutor.RetryableAuthFailure
+	if !errors.As(err, &retryable) || retryable == nil {
+		return false
+	}
+	return retryable.RetryableAuthFailure()
+}
+
+func errorForExecutionResult(err error) *Error {
+	if err == nil {
+		return nil
+	}
+	resultErr := &Error{Message: err.Error()}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		resultErr = cloneError(authErr)
+	}
+	if se, ok := errors.AsType[cliproxyexecutor.StatusError](err); ok && se != nil {
+		resultErr.HTTPStatus = se.StatusCode()
+	}
+	return resultErr
+}
+
+func failedExecutionResult(authID, provider, model string, err error) Result {
+	result := Result{
+		AuthID:   authID,
+		Provider: provider,
+		Model:    model,
+		Success:  false,
+		Error:    errorForExecutionResult(err),
+	}
+	result.RetryAfter = retryAfterFromError(err)
+	return result
 }
 
 func isUnauthorizedError(err error) bool {
@@ -3856,6 +3868,9 @@ func hasAntigravityProvider(providers []string) bool {
 }
 
 func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, providers []string) bool {
+	if isRetryableAuthFailure(lastErr) {
+		return false
+	}
 	status := statusCodeFromError(lastErr)
 	log.WithFields(log.Fields{
 		"lastErr":   errorString(lastErr),
@@ -3918,14 +3933,10 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
 			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
-				result.Error = &Error{Message: errExec.Error()}
-				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
-					result.Error.HTTPStatus = se.StatusCode()
+				if !isRetryableAuthFailure(errExec) {
+					result = failedExecutionResult(c.auth.ID, c.provider, resultModel, errExec)
+					m.MarkResult(creditsCtx, result)
 				}
-				if ra := retryAfterFromError(errExec); ra != nil {
-					result.RetryAfter = ra
-				}
-				m.MarkResult(creditsCtx, result)
 				continue
 			}
 			m.MarkResult(creditsCtx, result)

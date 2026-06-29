@@ -2,15 +2,28 @@ package codexretryfilter
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 
 	log "github.com/sirupsen/logrus"
 )
 
 var defaultStore atomic.Value
+var defaultStoreMu sync.Mutex
 
 func SetDefaultStore(store *Store) {
+	defaultStoreMu.Lock()
+	defer defaultStoreMu.Unlock()
 	defaultStore.Store(store)
+}
+
+func ClearDefaultStore(store *Store) {
+	defaultStoreMu.Lock()
+	defer defaultStoreMu.Unlock()
+	current, _ := defaultStore.Load().(*Store)
+	if store == nil || current == store {
+		defaultStore.Store((*Store)(nil))
+	}
 }
 
 func DefaultStore() *Store {

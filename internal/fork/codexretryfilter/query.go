@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -115,6 +116,14 @@ func (s *Store) queryBreakdown(ctx context.Context, filter QueryFilter, column s
 	if err != nil {
 		return nil, err
 	}
+	labels := map[string]string{}
+	if column == "auth_id" {
+		var labelErr error
+		labels, labelErr = s.authLabelsByID(ctx, attemptsWhere, attemptsArgs)
+		if labelErr != nil {
+			return nil, labelErr
+		}
+	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT COALESCE(`+column+`, '') AS key,
 	COUNT(*) AS hits,
@@ -126,22 +135,93 @@ ORDER BY hits DESC, key ASC`, hitsArgs...)
 		return nil, fmt.Errorf("query codex retry filter %s breakdown: %w", column, err)
 	}
 	defer rows.Close()
-	var out []Breakdown
+	type hitBreakdown struct {
+		hits      int64
+		successes int64
+	}
+	hits := make(map[string]hitBreakdown)
 	for rows.Next() {
-		var row Breakdown
+		var key string
+		var hitCount int64
 		var successes int64
-		if errScan := rows.Scan(&row.Key, &row.Hits, &successes); errScan != nil {
+		if errScan := rows.Scan(&key, &hitCount, &successes); errScan != nil {
 			return nil, fmt.Errorf("scan codex retry filter %s breakdown: %w", column, errScan)
 		}
-		row.Attempts = attempts[row.Key]
-		row.HitRate = ratio(row.Hits, row.Attempts)
-		row.RetrySuccessRate = ratio(successes, row.Hits)
-		out = append(out, row)
+		hits[key] = hitBreakdown{hits: hitCount, successes: successes}
 	}
 	if errRows := rows.Err(); errRows != nil {
 		return nil, fmt.Errorf("iterate codex retry filter %s breakdown: %w", column, errRows)
 	}
+
+	keys := make([]string, 0, len(attempts))
+	for key := range attempts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left := hits[keys[i]]
+		right := hits[keys[j]]
+		if left.hits != right.hits {
+			return left.hits > right.hits
+		}
+		if attempts[keys[i]] != attempts[keys[j]] {
+			return attempts[keys[i]] > attempts[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+
+	out := make([]Breakdown, 0, len(keys))
+	for _, key := range keys {
+		hit := hits[key]
+		row := Breakdown{
+			Key:              key,
+			Label:            labels[key],
+			Attempts:         attempts[key],
+			Hits:             hit.hits,
+			HitRate:          ratio(hit.hits, attempts[key]),
+			RetrySuccessRate: ratio(hit.successes, hit.hits),
+		}
+		out = append(out, row)
+	}
 	return out, nil
+}
+
+func (s *Store) authLabelsByID(ctx context.Context, where string, args []any) (map[string]string, error) {
+	labelWhere := appendAuthLabelPredicate(where)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT COALESCE(auth_id, '') AS key, auth_label
+FROM codex_response_retry_filter_attempts`+labelWhere+`
+ORDER BY occurred_at DESC, id DESC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query codex retry filter auth labels: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var key string
+		var label string
+		if errScan := rows.Scan(&key, &label); errScan != nil {
+			return nil, fmt.Errorf("scan codex retry filter auth labels: %w", errScan)
+		}
+		if _, exists := out[key]; exists {
+			continue
+		}
+		if label == "" {
+			continue
+		}
+		out[key] = label
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return nil, fmt.Errorf("iterate codex retry filter auth labels: %w", errRows)
+	}
+	return out, nil
+}
+
+func appendAuthLabelPredicate(where string) string {
+	predicate := "auth_label IS NOT NULL AND auth_label != ''"
+	if strings.TrimSpace(where) == "" {
+		return " WHERE " + predicate
+	}
+	return where + " AND " + predicate
 }
 
 func (s *Store) countByColumn(ctx context.Context, table, column, where string, args []any) (map[string]int64, error) {
