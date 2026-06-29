@@ -92,6 +92,21 @@ max-retry-credentials: 0
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
 
+# Temporary OpenAI Responses-only Codex retry filter. Disabled by default.
+# When enabled, matching Codex response.completed reasoning token counts are recorded
+# and retried without exposing the matched response to clients.
+codex-response-retry-filter:
+  enabled: false
+  models:
+    - "gpt-*"
+  reasoning-token-lengths:
+    - 516
+    - 1034
+    - 1552
+  intercept-streaming: true
+  intercept-non-streaming: true
+  guard-retry-attempts: 3
+
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
