@@ -4,4 +4,4 @@ Pending tasks and planned enhancements. Completed items move to `../finished/ind
 
 ## Pending
 
-No pending tasks.
+- [Codex Response Retry Filter Implementation Details](./codex-response-retry-filter-implementation-details.md)
