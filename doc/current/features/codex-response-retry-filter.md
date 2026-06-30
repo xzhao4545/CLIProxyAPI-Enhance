@@ -40,6 +40,8 @@ Non-streaming eligible attempts are inspected at `response.completed`. Matching 
 
 Streaming eligible attempts with `intercept-streaming: true` are strictly buffered until `response.completed`. Matching buffered attempts are discarded and retried before any downstream stream chunks are returned. Non-matching buffered attempts are emitted in original translated order.
 
+Codex SSE inspection now parses complete SSE events instead of relying on single physical lines. The executor accepts standard blank-line-terminated events, multi-line `data:` payloads, and legacy single-line `data:` JSON events so retry-filter matching, output reconstruction, and downstream translation stay aligned.
+
 Ordinary upstream HTTP errors, transport failures, context-length errors, and auth failures do not consume the feature-owned rule retry budget unless a matching completed event was inspected. The synthetic filter failure is not eligible for Antigravity credits fallback and does not apply auth cooldown or quota backoff.
 
 ## Persistence
