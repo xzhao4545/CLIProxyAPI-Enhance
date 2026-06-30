@@ -77,6 +77,10 @@ type Config struct {
 	// Usage controls fork-owned persistent usage statistics.
 	Usage UsageConfig `yaml:"usage" json:"usage"`
 
+	// CodexResponseRetryFilter controls the temporary OpenAI Responses-only
+	// Codex reasoning-token retry filter.
+	CodexResponseRetryFilter CodexResponseRetryFilterConfig `yaml:"codex-response-retry-filter" json:"codex-response-retry-filter"`
+
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
@@ -175,6 +179,18 @@ type KeywordFilterRule struct {
 	// CaseSensitive controls whether keyword matching is case-sensitive.
 	// Defaults to false (case-insensitive).
 	CaseSensitive bool `yaml:"case-sensitive,omitempty" json:"case-sensitive,omitempty"`
+}
+
+// CodexResponseRetryFilterConfig controls the temporary Codex response retry
+// filter. It applies only to OpenAI Responses protocol traffic routed through
+// the Codex executor.
+type CodexResponseRetryFilterConfig struct {
+	Enabled               bool     `yaml:"enabled" json:"enabled"`
+	Models                []string `yaml:"models" json:"models"`
+	ReasoningTokenLengths []int64  `yaml:"reasoning-token-lengths" json:"reasoning-token-lengths"`
+	InterceptStreaming    *bool    `yaml:"intercept-streaming,omitempty" json:"intercept-streaming,omitempty"`
+	InterceptNonStreaming *bool    `yaml:"intercept-non-streaming,omitempty" json:"intercept-non-streaming,omitempty"`
+	GuardRetryAttempts    *int     `yaml:"guard-retry-attempts,omitempty" json:"guard-retry-attempts,omitempty"`
 }
 
 // ClaudeHeaderDefaults configures default header values injected into Claude API requests.

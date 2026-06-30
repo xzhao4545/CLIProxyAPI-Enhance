@@ -19,6 +19,7 @@ type AmpCode = internalconfig.AmpCode
 type OAuthModelAlias = internalconfig.OAuthModelAlias
 type PayloadConfig = internalconfig.PayloadConfig
 type KeywordFilterRule = internalconfig.KeywordFilterRule
+type CodexResponseRetryFilterConfig = internalconfig.CodexResponseRetryFilterConfig
 type PayloadRule = internalconfig.PayloadRule
 type PayloadFilterRule = internalconfig.PayloadFilterRule
 type PayloadModelRule = internalconfig.PayloadModelRule

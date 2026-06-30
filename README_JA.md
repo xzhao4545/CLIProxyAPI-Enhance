@@ -18,6 +18,18 @@
 - 代替プロバイダーが利用可能な場合、マッチによる失敗はプロバイダーのフェイルオーバーとクールダウンをトリガー可能
 - `/v0/management/keyword-filters` または管理パネルからルールを管理可能
 
+### Codex Responses リトライフィルター
+- Codex/OpenAI Responses プロトコル向けの一時的なリトライガードで、特定の reasoning token 長で発生する異常な完了パターンを扱うための機能
+- 有効化、モデル glob マッチ、マッチ対象 reasoning token 長、ストリーミング/非ストリーミングのインターセプト、ガードリトライ回数を設定可能
+- デフォルトでは `gpt-*` モデルと `516`、`1034`、`1552` の reasoning token 長を対象
+- マッチしたリクエストは内部または conductor 経由で自動的にリトライされ、合成されたリトライエラーはクライアントへ返されません
+- SQLite にチェック回数、ヒット数、ヒット率、リトライ成功率、マッチ長、アクション、認証ラベル、最近のヒット詳細を記録
+- `/v0/management/codex-response-retry-filter` または対応する管理パネルページから設定・確認可能
+- この機能には、対応するフロントエンド
+  [xzhao4545/Cli-Proxy-API-Management-Center-Ehance](https://github.com/xzhao4545/Cli-Proxy-API-Management-Center-Ehance)
+  の実装が必要です。対象ファイルは `src/pages/CodexRetryFilterPage.tsx`、
+  `src/pages/CodexRetryFilterPage.module.scss`、および関連するロケールエントリです。古いフロントエンドビルドにはこのページが含まれていません。
+
 ### プロバイダーカスタムラベル
 - AI プロバイダーにカスタム名（`label` フィールド）を設定可能
 - 管理パネルのプロバイダー一覧にラベル名として表示。未設定の場合は `{brand}#{番号}` 形式で自動生成
@@ -42,11 +54,34 @@ keyword-filters:
     case-sensitive: false
     enabled: true
 
+# Codex/OpenAI Responses リトライフィルター設定
+codex-response-retry-filter:
+  enabled: false
+  models:
+    - "gpt-*"
+  reasoning-token-lengths:
+    - 516
+    - 1034
+    - 1552
+  intercept-streaming: true
+  intercept-non-streaming: true
+  guard-retry-attempts: 3
+
 # リモート管理パネルの設定
 remote-management:
   panel-github-repository: https://github.com/xzhao4545/Cli-Proxy-API-Management-Center-Ehance
   disable-auto-update-panel: false # パネルの自動更新を無効にするかどうか
 ```
+
+## スクリーンショット
+
+### Codex Responses リトライフィルター
+
+![Codex Responses リトライフィルター](img/516-retry.png)
+
+### 使用統計
+
+![使用統計](img/使用统计页.png)
 
 ## アップストリームドキュメント
 

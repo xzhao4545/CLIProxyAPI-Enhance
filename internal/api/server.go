@@ -30,6 +30,7 @@ import (
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fork/codexretryfilter"
 	forkusage "github.com/router-for-me/CLIProxyAPI/v7/internal/fork/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -61,6 +62,7 @@ type serverOptionConfig struct {
 	keepAliveOnTimeout   func()
 	postAuthHook         auth.PostAuthHook
 	usageQueryService    forkusage.QueryService
+	codexRetryFilter     codexretryfilter.QueryService
 }
 
 // ServerOption customises HTTP server construction.
@@ -132,6 +134,12 @@ func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
 func WithUsageQueryService(service forkusage.QueryService) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.usageQueryService = service
+	}
+}
+
+func WithCodexRetryFilterQueryService(service codexretryfilter.QueryService) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.codexRetryFilter = service
 	}
 }
 
@@ -289,6 +297,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	if optionState.codexRetryFilter != nil {
+		s.mgmt.SetCodexRetryFilterQueryService(optionState.codexRetryFilter)
+	}
 	if optionState.usageQueryService != nil {
 		s.usageHandler = forkusage.NewHandler(optionState.usageQueryService)
 		if authManager != nil {
@@ -715,6 +726,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/keyword-filters", s.mgmt.PutKeywordFilters)
 		mgmt.PATCH("/keyword-filters", s.mgmt.PatchKeywordFilter)
 		mgmt.DELETE("/keyword-filters", s.mgmt.DeleteKeywordFilter)
+
+		mgmt.GET("/codex-response-retry-filter", s.mgmt.GetCodexResponseRetryFilter)
+		mgmt.PUT("/codex-response-retry-filter", s.mgmt.PutCodexResponseRetryFilter)
+		mgmt.PATCH("/codex-response-retry-filter", s.mgmt.PatchCodexResponseRetryFilter)
+		mgmt.GET("/codex-response-retry-filter/stats", s.mgmt.GetCodexResponseRetryFilterStats)
+		mgmt.GET("/codex-response-retry-filter/hits", s.mgmt.GetCodexResponseRetryFilterHits)
 
 		mgmt.GET("/oauth-excluded-models", s.mgmt.GetOAuthExcludedModels)
 		mgmt.PUT("/oauth-excluded-models", s.mgmt.PutOAuthExcludedModels)

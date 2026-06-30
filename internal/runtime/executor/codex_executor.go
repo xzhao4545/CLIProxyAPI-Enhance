@@ -13,6 +13,7 @@ import (
 
 	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fork/codexretryfilter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -98,6 +99,44 @@ func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]
 
 	completedDataPatched, _ := sjson.SetRawBytes(eventData, "response.output", outputArray)
 	return completedDataPatched
+}
+
+func codexRetryFilterAttemptRecord(requestID string, auth *cliproxyauth.Auth, model, clientModel, responseModel string, stream bool, reasoningTokens *int64, match *codexretryfilter.Match, action string, remaining, attempt int) codexretryfilter.AttemptRecord {
+	record := codexretryfilter.AttemptRecord{
+		RequestID:           requestID,
+		ProviderKey:         "codex",
+		Model:               model,
+		ClientModel:         clientModel,
+		ResponseModel:       responseModel,
+		Stream:              stream,
+		Eligible:            true,
+		Action:              action,
+		GuardRetryRemaining: remaining,
+		Attempt:             attempt,
+	}
+	if auth != nil {
+		record.AuthID = auth.ID
+		record.AuthLabel = strings.TrimSpace(auth.Label)
+	}
+	if reasoningTokens != nil {
+		tokens := *reasoningTokens
+		record.ReasoningTokens = &tokens
+	}
+	if match != nil {
+		record.Matched = true
+		tokens := match.ReasoningTokens
+		length := match.MatchedLength
+		record.ReasoningTokens = &tokens
+		record.MatchedLength = &length
+	}
+	return record
+}
+
+func codexRetryFilterRuntimeConfig(cfg *config.Config) codexretryfilter.RuntimeConfig {
+	if cfg == nil {
+		return codexretryfilter.Normalize(config.CodexResponseRetryFilterConfig{})
+	}
+	return codexretryfilter.Normalize(cfg.CodexResponseRetryFilter)
 }
 
 func codexTerminalStreamContextLengthErr(eventData []byte) (statusErr, bool) {
@@ -288,125 +327,141 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
-	if err != nil {
-		return resp, err
-	}
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      body,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
+	filterCfg := codexRetryFilterRuntimeConfig(e.cfg)
+	filterEligible := codexretryfilter.Eligible(filterCfg, from.String(), baseModel)
+	filterCtx, filterRequestID := codexretryfilter.EnsureRequestID(ctx)
+	remainingFilterRetries := 0
+	if filterEligible && filterCfg.InterceptNonStreaming {
+		remainingFilterRetries = filterCfg.GuardRetryAttempts
 	}
-	defer func() {
+	filterAttempt := 1
+nonStreamRetryLoop:
+	for {
+		httpReq, errReq := e.cacheHelper(filterCtx, from, url, req, body)
+		if errReq != nil {
+			return resp, errReq
+		}
+		applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+		helps.RecordAPIRequest(filterCtx, e.cfg, helps.UpstreamRequestLog{
+			URL:       url,
+			Method:    http.MethodPost,
+			Headers:   httpReq.Header.Clone(),
+			Body:      body,
+			Provider:  e.Identifier(),
+			AuthID:    authID,
+			AuthLabel: authLabel,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
+		httpClient := helps.NewProxyAwareHTTPClient(filterCtx, e.cfg, auth, 0)
+		httpClient = reporter.TrackHTTPClient(httpClient)
+		httpResp, errDo := httpClient.Do(httpReq)
+		if errDo != nil {
+			helps.RecordAPIResponseError(filterCtx, e.cfg, errDo)
+			return resp, errDo
+		}
+		helps.RecordAPIResponseMetadata(filterCtx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+			b, _ := io.ReadAll(httpResp.Body)
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("codex executor: close response body error: %v", errClose)
+			}
+			helps.AppendAPIResponseChunk(filterCtx, e.cfg, b)
+			helps.LogWithRequestID(filterCtx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+			err = newCodexStatusErr(httpResp.StatusCode, b)
+			return resp, err
+		}
+		data, errRead := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("codex executor: close response body error: %v", errClose)
 		}
-	}()
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = newCodexStatusErr(httpResp.StatusCode, b)
-		return resp, err
-	}
-	data, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
-	}
-	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
-
-	lines := bytes.Split(data, []byte("\n"))
-	outputItemsByIndex := make(map[int64][]byte)
-	var outputItemsFallback [][]byte
-	for _, line := range lines {
-		if !bytes.HasPrefix(line, dataTag) {
-			continue
+		if errRead != nil {
+			helps.RecordAPIResponseError(filterCtx, e.cfg, errRead)
+			return resp, errRead
 		}
+		helps.AppendAPIResponseChunk(filterCtx, e.cfg, data)
 
-		eventData := bytes.TrimSpace(line[5:])
-		eventType := gjson.GetBytes(eventData, "type").String()
-
-		if streamErr, ok := codexTerminalStreamContextLengthErr(eventData); ok {
-			err = streamErr
-			return resp, err
-		}
-
-		if eventType == "response.output_item.done" {
-			itemResult := gjson.GetBytes(eventData, "item")
-			if !itemResult.Exists() || itemResult.Type != gjson.JSON {
+		lines := bytes.Split(data, []byte("\n"))
+		outputItemsByIndex := make(map[int64][]byte)
+		var outputItemsFallback [][]byte
+		for _, line := range lines {
+			if !bytes.HasPrefix(line, dataTag) {
 				continue
 			}
-			outputIndexResult := gjson.GetBytes(eventData, "output_index")
-			if outputIndexResult.Exists() {
-				outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
-			} else {
-				outputItemsFallback = append(outputItemsFallback, []byte(itemResult.Raw))
+
+			eventData := bytes.TrimSpace(line[5:])
+			eventType := gjson.GetBytes(eventData, "type").String()
+
+			if streamErr, ok := codexTerminalStreamContextLengthErr(eventData); ok {
+				err = streamErr
+				return resp, err
 			}
-			continue
-		}
 
-		if eventType != "response.completed" {
-			continue
-		}
-
-		if detail, ok := helps.ParseCodexUsage(eventData); ok {
-			reporter.SetResponseModel(helps.ExtractCodexResponseModel(eventData))
-			reporter.Publish(ctx, detail)
-		}
-		publishCodexImageToolUsage(ctx, reporter, body, eventData)
-
-		completedData := eventData
-		outputResult := gjson.GetBytes(completedData, "response.output")
-		shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
-		if shouldPatchOutput {
-			completedDataPatched := completedData
-			completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output", []byte(`[]`))
-
-			indexes := make([]int64, 0, len(outputItemsByIndex))
-			for idx := range outputItemsByIndex {
-				indexes = append(indexes, idx)
+			if eventType == "response.output_item.done" {
+				itemResult := gjson.GetBytes(eventData, "item")
+				if !itemResult.Exists() || itemResult.Type != gjson.JSON {
+					continue
+				}
+				outputIndexResult := gjson.GetBytes(eventData, "output_index")
+				if outputIndexResult.Exists() {
+					outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
+				} else {
+					outputItemsFallback = append(outputItemsFallback, []byte(itemResult.Raw))
+				}
+				continue
 			}
-			sort.Slice(indexes, func(i, j int) bool {
-				return indexes[i] < indexes[j]
-			})
-			for _, idx := range indexes {
-				completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output.-1", outputItemsByIndex[idx])
-			}
-			for _, item := range outputItemsFallback {
-				completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output.-1", item)
-			}
-			completedData = completedDataPatched
-		}
 
-		var param any
-		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, completedData, &param)
-		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
-		return resp, nil
+			if eventType != "response.completed" {
+				continue
+			}
+
+			responseModel := helps.ExtractCodexResponseModel(eventData)
+			if filterEligible {
+				match, inspected := codexretryfilter.MatchCompletedEvent(filterCfg, eventData)
+				if inspected {
+					var reasoningTokens *int64
+					if tokens, ok := codexretryfilter.ExtractReasoningTokens(eventData); ok {
+						reasoningTokens = &tokens
+					}
+					action := codexretryfilter.DecideAction(match, filterCfg.InterceptNonStreaming, remainingFilterRetries)
+					codexretryfilter.RecordAttemptBestEffort(filterCtx, codexRetryFilterAttemptRecord(filterRequestID, auth, baseModel, req.Model, responseModel, false, reasoningTokens, match, action, remainingFilterRetries, filterAttempt))
+					if action == codexretryfilter.ActionInternalRetry {
+						reporter.ResetTTFT()
+						remainingFilterRetries--
+						filterAttempt++
+						continue nonStreamRetryLoop
+					}
+					if action == codexretryfilter.ActionConductorRetry && match != nil {
+						err = codexretryfilter.NewRetryError(*match)
+						return resp, err
+					}
+				}
+			}
+
+			if detail, ok := helps.ParseCodexUsage(eventData); ok {
+				reporter.SetResponseModel(responseModel)
+				reporter.Publish(filterCtx, detail)
+			}
+			publishCodexImageToolUsage(filterCtx, reporter, body, eventData)
+
+			completedData := patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
+			var param any
+			out := sdktranslator.TranslateNonStream(filterCtx, to, from, req.Model, originalPayload, body, completedData, &param)
+			resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+			if filterEligible {
+				codexretryfilter.MarkFinalSuccessBestEffort(filterCtx, filterRequestID)
+			}
+			return resp, nil
+		}
+		err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+		return resp, err
 	}
-	err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
-	return resp, err
 }
 
 func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
@@ -552,17 +607,78 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
-	if err != nil {
-		return nil, err
-	}
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	filterCfg := codexRetryFilterRuntimeConfig(e.cfg)
+	filterEligible := codexretryfilter.Eligible(filterCfg, from.String(), baseModel)
+	filterCtx, filterRequestID := codexretryfilter.EnsureRequestID(ctx)
+	if filterEligible && filterCfg.InterceptStreaming {
+		remainingFilterRetries := filterCfg.GuardRetryAttempts
+		filterAttempt := 1
+	streamRetryLoop:
+		for {
+			httpReq, errReq := e.cacheHelper(filterCtx, from, url, req, body)
+			if errReq != nil {
+				return nil, errReq
+			}
+			applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+			helps.RecordAPIRequest(filterCtx, e.cfg, helps.UpstreamRequestLog{
+				URL:       url,
+				Method:    http.MethodPost,
+				Headers:   httpReq.Header.Clone(),
+				Body:      body,
+				Provider:  e.Identifier(),
+				AuthID:    authID,
+				AuthLabel: authLabel,
+				AuthType:  authType,
+				AuthValue: authValue,
+			})
+			httpClient := helps.NewProxyAwareHTTPClient(filterCtx, e.cfg, auth, 0)
+			httpClient = reporter.TrackHTTPClient(httpClient)
+			httpResp, errDo := httpClient.Do(httpReq)
+			if errDo != nil {
+				helps.RecordAPIResponseError(filterCtx, e.cfg, errDo)
+				return nil, errDo
+			}
+			helps.RecordAPIResponseMetadata(filterCtx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+			if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+				data, readErr := io.ReadAll(httpResp.Body)
+				if errClose := httpResp.Body.Close(); errClose != nil {
+					log.Errorf("codex executor: close response body error: %v", errClose)
+				}
+				if readErr != nil {
+					helps.RecordAPIResponseError(filterCtx, e.cfg, readErr)
+					return nil, readErr
+				}
+				helps.AppendAPIResponseChunk(filterCtx, e.cfg, data)
+				helps.LogWithRequestID(filterCtx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+				err = newCodexStatusErr(httpResp.StatusCode, data)
+				return nil, err
+			}
+			result, retry, retryErr := e.readCodexFilteredStreamAttempt(filterCtx, httpResp, reporter, auth, req, body, originalPayload, to, from, baseModel, filterRequestID, filterCfg, remainingFilterRetries, filterAttempt)
+			if retryErr != nil {
+				err = retryErr
+				return nil, err
+			}
+			if retry {
+				reporter.ResetTTFT()
+				remainingFilterRetries--
+				filterAttempt++
+				continue streamRetryLoop
+			}
+			return result, nil
+		}
+	}
+
+	httpReq, err := e.cacheHelper(filterCtx, from, url, req, body)
+	if err != nil {
+		return nil, err
+	}
+	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -630,6 +746,18 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				case "response.output_item.done":
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
+					if filterEligible {
+						responseModel := helps.ExtractCodexResponseModel(data)
+						match, inspected := codexretryfilter.MatchCompletedEvent(filterCfg, data)
+						if inspected {
+							var reasoningTokens *int64
+							if tokens, ok := codexretryfilter.ExtractReasoningTokens(data); ok {
+								reasoningTokens = &tokens
+							}
+							action := codexretryfilter.DecideAction(match, false, 0)
+							codexretryfilter.RecordAttemptBestEffort(filterCtx, codexRetryFilterAttemptRecord(filterRequestID, auth, baseModel, req.Model, responseModel, true, reasoningTokens, match, action, 0, 1))
+						}
+					}
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						reporter.SetResponseModel(helps.ExtractCodexResponseModel(data))
 						reporter.Publish(ctx, detail)
@@ -657,8 +785,95 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			case <-ctx.Done():
 			}
 		}
+		if filterEligible {
+			codexretryfilter.MarkFinalSuccessBestEffort(filterCtx, filterRequestID)
+		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func (e *CodexExecutor) readCodexFilteredStreamAttempt(ctx context.Context, httpResp *http.Response, reporter *helps.UsageReporter, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, body, originalPayload []byte, to, from sdktranslator.Format, baseModel, requestID string, filterCfg codexretryfilter.RuntimeConfig, remainingRetries, attempt int) (*cliproxyexecutor.StreamResult, bool, error) {
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("codex executor: close response body error: %v", errClose)
+		}
+	}()
+
+	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(nil, 52_428_800)
+	var param any
+	outputItemsByIndex := make(map[int64][]byte)
+	var outputItemsFallback [][]byte
+	var buffered [][]byte
+	var completed bool
+
+	for scanner.Scan() {
+		line := bytes.Clone(scanner.Bytes())
+		helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+		translatedLine := bytes.Clone(line)
+
+		if bytes.HasPrefix(line, dataTag) {
+			data := bytes.TrimSpace(line[5:])
+			if streamErr, ok := codexTerminalStreamContextLengthErr(data); ok {
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
+				return nil, false, streamErr
+			}
+			switch gjson.GetBytes(data, "type").String() {
+			case "response.output_item.done":
+				collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
+			case "response.completed":
+				completed = true
+				responseModel := helps.ExtractCodexResponseModel(data)
+				match, inspected := codexretryfilter.MatchCompletedEvent(filterCfg, data)
+				if inspected {
+					var reasoningTokens *int64
+					if tokens, ok := codexretryfilter.ExtractReasoningTokens(data); ok {
+						reasoningTokens = &tokens
+					}
+					action := codexretryfilter.DecideAction(match, true, remainingRetries)
+					codexretryfilter.RecordAttemptBestEffort(ctx, codexRetryFilterAttemptRecord(requestID, auth, baseModel, req.Model, responseModel, true, reasoningTokens, match, action, remainingRetries, attempt))
+					if action == codexretryfilter.ActionInternalRetry {
+						return nil, true, nil
+					}
+					if action == codexretryfilter.ActionConductorRetry && match != nil {
+						return nil, false, codexretryfilter.NewRetryError(*match)
+					}
+				}
+				if detail, ok := helps.ParseCodexUsage(data); ok {
+					reporter.SetResponseModel(responseModel)
+					reporter.Publish(ctx, detail)
+				}
+				publishCodexImageToolUsage(ctx, reporter, body, data)
+				data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
+				translatedLine = append([]byte("data: "), data...)
+			}
+		}
+
+		chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, body, translatedLine, &param)
+		for i := range chunks {
+			buffered = append(buffered, bytes.Clone(chunks[i]))
+		}
+	}
+	if errScan := scanner.Err(); errScan != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+		reporter.PublishFailure(ctx, errScan)
+		return nil, false, errScan
+	}
+	if !completed {
+		err := statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		reporter.PublishFailure(ctx, err)
+		return nil, false, err
+	}
+
+	out := make(chan cliproxyexecutor.StreamChunk, len(buffered))
+	for _, payload := range buffered {
+		out <- cliproxyexecutor.StreamChunk{Payload: payload}
+	}
+	close(out)
+	codexretryfilter.MarkFinalSuccessBestEffort(ctx, requestID)
+	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, false, nil
 }
 
 func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {

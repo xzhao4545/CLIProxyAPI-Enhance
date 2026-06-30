@@ -173,6 +173,17 @@ func (r *UsageReporter) MarkFirstResponseByte() {
 	r.setTTFT(time.Since(start))
 }
 
+func (r *UsageReporter) ResetTTFT() {
+	if r == nil {
+		return
+	}
+	r.ttftMu.Lock()
+	r.ttft = 0
+	r.ttftStart = time.Time{}
+	r.ttftSet = false
+	r.ttftMu.Unlock()
+}
+
 func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.Detail) (usage.Record, bool) {
 	if r == nil {
 		return usage.Record{}, false

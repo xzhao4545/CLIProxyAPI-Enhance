@@ -4,4 +4,4 @@ Pending tasks and planned enhancements. Completed items move to `../finished/ind
 
 ## Pending
 
-(none currently)
+No pending tasks.

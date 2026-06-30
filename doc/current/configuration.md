@@ -59,6 +59,28 @@ Supported `match-mode` values are `anywhere`, `start`, `end`, and `exact`. Empty
 
 Rules are evaluated in configured order. Disabled rules and rules with an empty keyword are skipped. Runtime matching snapshots the rule list for each stream attempt so hot reloads apply to new attempts without changing an in-flight attempt.
 
+## Codex Response Retry Filter
+
+`codex-response-retry-filter` controls the temporary OpenAI Responses-only Codex reasoning-token retry guard:
+
+```yaml
+codex-response-retry-filter:
+  enabled: false
+  models:
+    - "gpt-*"
+  reasoning-token-lengths:
+    - 516
+    - 1034
+    - 1552
+  intercept-streaming: true
+  intercept-non-streaming: true
+  guard-retry-attempts: 3
+```
+
+The filter is disabled by default. It only inspects Codex executor traffic whose source protocol is `openai-response`. Matching completed events are recorded in dedicated SQLite tables and retried without sending the matched response to the client. Streaming interception buffers eligible streams until `response.completed` so matched chunks are not emitted before a retry decision.
+
+`guard-retry-attempts` is the number of same-auth feature-owned retries consumed only by configured reasoning-token matches. Ordinary upstream HTTP errors do not consume this budget.
+
 ## Payload Rules
 
 `payload` supports default rules, raw default rules, override rules, raw override rules, and filter rules. Raw JSON values are validated during config normalization; invalid raw rules are dropped. Model matching supports protocol, source protocol, headers, JSON path equality, non-equality, existence, and non-existence constraints.
