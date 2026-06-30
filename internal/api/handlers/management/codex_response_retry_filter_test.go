@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,53 @@ func TestCodexResponseRetryFilterStatsAndHits(t *testing.T) {
 	}
 	if hitsBody.HasMore {
 		t.Fatalf("has_more = true, want false")
+	}
+}
+
+func TestCodexResponseRetryFilterStatsIgnoreCursorQuery(t *testing.T) {
+	ctx := context.Background()
+	store, err := codexretryfilter.OpenStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	length := int64(516)
+	for i := 0; i < 3; i++ {
+		record := codexretryfilter.AttemptRecord{
+			RequestID:       "req-cursor-stats-" + strconv.Itoa(i),
+			OccurredAt:      time.Unix(int64(100+i), 0).UTC(),
+			ProviderKey:     "codex",
+			AuthID:          "auth-1",
+			Model:           "gpt-5-codex",
+			Eligible:        true,
+			Matched:         true,
+			ReasoningTokens: &length,
+			MatchedLength:   &length,
+			Action:          codexretryfilter.ActionInternalRetry,
+		}
+		if err := store.InsertAttempt(ctx, record); err != nil {
+			t.Fatalf("InsertAttempt(%d) error = %v", i, err)
+		}
+		if err := store.InsertHit(ctx, record); err != nil {
+			t.Fatalf("InsertHit(%d) error = %v", i, err)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetCodexRetryFilterQueryService(store)
+
+	c, rec := managementTestContext(http.MethodGet, "/v0/management/codex-response-retry-filter/stats?before_occurred_at=1970-01-01T00:01:42Z&before_id=4611686018427387903", "")
+	h.GetCodexResponseRetryFilterStats(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stats status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var stats codexretryfilter.Stats
+	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if stats.Attempts != 3 || stats.Hits != 3 {
+		t.Fatalf("stats = %#v, want full 3/3 totals", stats)
 	}
 }
 

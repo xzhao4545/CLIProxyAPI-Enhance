@@ -240,6 +240,58 @@ func TestStoreQueryStatsUsesRollupForFullHourWindow(t *testing.T) {
 	}
 }
 
+func TestStoreQueryStatsIgnoresCursorFiltersAndCacheContamination(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	tokens := int64(516)
+	for i := 0; i < 3; i++ {
+		record := AttemptRecord{
+			RequestID:       fmt.Sprintf("req-stats-%d", i),
+			OccurredAt:      time.Unix(int64(100+i), 0).UTC(),
+			ProviderKey:     "codex",
+			AuthID:          "auth-1",
+			AuthLabel:       "Primary",
+			Model:           "gpt-5-codex",
+			Eligible:        true,
+			Matched:         true,
+			ReasoningTokens: &tokens,
+			MatchedLength:   &tokens,
+			Action:          ActionInternalRetry,
+		}
+		if err := store.InsertAttempt(ctx, record); err != nil {
+			t.Fatalf("InsertAttempt(%d) error = %v", i, err)
+		}
+		if err := store.InsertHit(ctx, record); err != nil {
+			t.Fatalf("InsertHit(%d) error = %v", i, err)
+		}
+	}
+
+	before := time.Unix(102, 0).UTC()
+	statsWithCursor, err := store.QueryStats(ctx, QueryFilter{
+		BeforeTime: &before,
+		BeforeID:   1<<62 - 1,
+	})
+	if err != nil {
+		t.Fatalf("QueryStats(with cursor) error = %v", err)
+	}
+	if statsWithCursor.Attempts != 3 || statsWithCursor.Hits != 3 {
+		t.Fatalf("stats with cursor = %#v, want full 3/3 totals", statsWithCursor)
+	}
+
+	statsWithoutCursor, err := store.QueryStats(ctx, QueryFilter{})
+	if err != nil {
+		t.Fatalf("QueryStats(without cursor) error = %v", err)
+	}
+	if statsWithoutCursor.Attempts != 3 || statsWithoutCursor.Hits != 3 {
+		t.Fatalf("stats without cursor = %#v, want full 3/3 totals", statsWithoutCursor)
+	}
+}
+
 func TestStorePruneOlderThan(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenStore(ctx, ":memory:")

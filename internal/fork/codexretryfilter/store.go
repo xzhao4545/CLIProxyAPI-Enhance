@@ -298,7 +298,7 @@ func (s *Store) QueryStats(ctx context.Context, filter QueryFilter) (Stats, erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	filter = normalizeQueryFilter(filter)
+	filter = normalizeStatsFilter(filter)
 	cacheKey := statsCacheKey(filter)
 	if stats, ok := s.getCachedStats(cacheKey); ok {
 		return stats, nil

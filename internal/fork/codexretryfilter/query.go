@@ -35,6 +35,14 @@ func normalizeQueryFilter(filter QueryFilter) QueryFilter {
 	return filter
 }
 
+func normalizeStatsFilter(filter QueryFilter) QueryFilter {
+	filter = normalizeQueryFilter(filter)
+	filter.BeforeTime = nil
+	filter.BeforeID = 0
+	filter.Offset = 0
+	return filter
+}
+
 func buildWhere(filter QueryFilter) (string, []any) {
 	return buildWhereForTable(filter, false, true)
 }
