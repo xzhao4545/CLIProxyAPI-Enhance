@@ -38,7 +38,6 @@ func RecordAttemptBestEffort(ctx context.Context, record AttemptRecord) {
 	}
 	if err := store.InsertAttempt(ctx, record); err != nil {
 		log.WithError(err).Warn("record codex response retry filter attempt failed")
-		return
 	}
 	if record.Matched {
 		if err := store.InsertHit(ctx, record); err != nil {

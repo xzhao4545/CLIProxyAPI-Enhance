@@ -40,39 +40,3 @@ func TestClearDefaultStoreOnlyClearsCurrentStore(t *testing.T) {
 		t.Fatal("ClearDefaultStore(nil) did not clear default store")
 	}
 }
-
-func TestRecordAttemptBestEffortSkipsHitWhenAttemptInsertFails(t *testing.T) {
-	ctx := context.Background()
-	store, err := OpenStore(ctx, ":memory:")
-	if err != nil {
-		t.Fatalf("OpenStore() error = %v", err)
-	}
-	defer func() { _ = store.Close() }()
-	t.Cleanup(func() { ClearDefaultStore(nil) })
-
-	SetDefaultStore(store)
-	if _, err := store.db.ExecContext(ctx, "DROP TABLE codex_response_retry_filter_attempts"); err != nil {
-		t.Fatalf("drop attempts table: %v", err)
-	}
-
-	tokens := int64(516)
-	RecordAttemptBestEffort(ctx, AttemptRecord{
-		RequestID:       "req-fail",
-		ProviderKey:     "codex",
-		AuthID:          "auth-1",
-		Model:           "gpt-5-codex",
-		Eligible:        true,
-		Matched:         true,
-		ReasoningTokens: &tokens,
-		MatchedLength:   &tokens,
-		Action:          ActionInternalRetry,
-	})
-
-	var hits int64
-	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM codex_response_retry_filter_hits").Scan(&hits); err != nil {
-		t.Fatalf("count hits: %v", err)
-	}
-	if hits != 0 {
-		t.Fatalf("hits = %d, want 0 when attempt insert fails", hits)
-	}
-}
