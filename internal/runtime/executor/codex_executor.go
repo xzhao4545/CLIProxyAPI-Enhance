@@ -53,34 +53,16 @@ func (d *codexSSEDecoder) Feed(chunk []byte) []codexSSEEvent {
 	if len(chunk) == 0 {
 		return nil
 	}
-	_, _ = d.buffer.Write(chunk)
-	return d.popReadyEvents()
-}
-
-func (d *codexSSEDecoder) Flush() []codexSSEEvent {
-	events := d.popReadyEvents()
-	if event, ok := d.flushPending(); ok {
-		events = append(events, event)
-	}
-	d.buffer.Reset()
-	return events
-}
-
-func (d *codexSSEDecoder) popReadyEvents() []codexSSEEvent {
-	if d.buffer.Len() == 0 {
-		return nil
-	}
+	d.buffer.Write(chunk)
 	var events []codexSSEEvent
 	for {
-		line, errRead := d.buffer.ReadBytes('\n')
-		if errRead != nil {
-			if len(line) > 0 {
-				d.buffer.Reset()
-				_, _ = d.buffer.Write(line)
-			}
-			break
+		buf := d.buffer.Bytes()
+		lineEnd := bytes.IndexByte(buf, '\n')
+		if lineEnd < 0 {
+			return events
 		}
-		line = bytes.TrimSuffix(line, []byte{'\n'})
+		line := bytes.Clone(buf[:lineEnd])
+		d.buffer.Next(lineEnd + 1)
 		line = bytes.TrimSuffix(line, []byte{'\r'})
 		if len(bytes.TrimSpace(line)) == 0 {
 			if event, ok := d.flushPending(); ok {
@@ -95,20 +77,61 @@ func (d *codexSSEDecoder) popReadyEvents() []codexSSEEvent {
 		if len(dataLine) > 0 && dataLine[0] == ' ' {
 			dataLine = dataLine[1:]
 		}
-		d.data = append(d.data, bytes.Clone(dataLine))
-		if event, ok := d.tryFlushCompatibleSingleLine(); ok {
+		if event, ok := d.flushPendingIfCompatibleNewEvent(dataLine); ok {
 			events = append(events, event)
 		}
+		d.data = append(d.data, bytes.Clone(dataLine))
 	}
-	return events
 }
 
-func (d *codexSSEDecoder) tryFlushCompatibleSingleLine() (codexSSEEvent, bool) {
-	if len(d.data) != 1 {
+func (d *codexSSEDecoder) Flush() []codexSSEEvent {
+	if line := bytes.TrimSuffix(d.buffer.Bytes(), []byte{'\r'}); len(line) > 0 {
+		if bytes.HasPrefix(line, dataTag) {
+			dataLine := bytes.TrimPrefix(line, dataTag)
+			if len(dataLine) > 0 && dataLine[0] == ' ' {
+				dataLine = dataLine[1:]
+			}
+			if event, ok := d.flushPendingIfCompatibleNewEvent(dataLine); ok {
+				d.buffer.Reset()
+				d.buffer.Write(line)
+				return append([]codexSSEEvent{event}, d.Flush()...)
+			}
+			d.data = append(d.data, bytes.Clone(dataLine))
+		}
+	}
+	d.buffer.Reset()
+	if event, ok := d.flushPendingAtEOF(); ok {
+		return []codexSSEEvent{event}
+	}
+	return nil
+}
+
+func (d *codexSSEDecoder) flushPending() (codexSSEEvent, bool) {
+	event, ok := codexSSEEventFromDataLines(d.data)
+	d.data = nil
+	return event, ok
+}
+
+func (d *codexSSEDecoder) flushPendingAtEOF() (codexSSEEvent, bool) {
+	if len(d.data) == 0 {
 		return codexSSEEvent{}, false
 	}
-	payload := d.data[0]
+	payload := bytes.Join(d.data, []byte("\n"))
 	if !codexSSEPayloadComplete(payload) {
+		d.data = nil
+		return codexSSEEvent{}, false
+	}
+	event, ok := codexSSEEventFromDataLines(d.data)
+	d.data = nil
+	return event, ok
+}
+
+func (d *codexSSEDecoder) flushPendingIfCompatibleNewEvent(nextDataLine []byte) (codexSSEEvent, bool) {
+	if len(d.data) == 0 {
+		return codexSSEEvent{}, false
+	}
+	payload := bytes.Join(d.data, []byte("\n"))
+	if !codexSSEPayloadComplete(payload) || !codexSSELooksLikeNewEventStart(nextDataLine) {
 		return codexSSEEvent{}, false
 	}
 	event, ok := codexSSEEventFromDataLines(d.data)
@@ -118,20 +141,11 @@ func (d *codexSSEDecoder) tryFlushCompatibleSingleLine() (codexSSEEvent, bool) {
 	return event, ok
 }
 
-func (d *codexSSEDecoder) flushPending() (codexSSEEvent, bool) {
-	event, ok := codexSSEEventFromDataLines(d.data)
-	d.data = nil
-	return event, ok
-}
-
 func codexSSEEventFromDataLines(dataLines [][]byte) (codexSSEEvent, bool) {
 	if len(dataLines) == 0 {
 		return codexSSEEvent{}, false
 	}
 	payload := bytes.Join(dataLines, []byte("\n"))
-	if !codexSSEPayloadComplete(payload) {
-		return codexSSEEvent{}, false
-	}
 	raw := make([]byte, 0, len(payload)+6)
 	raw = append(raw, "data: "...)
 	raw = append(raw, payload...)
@@ -144,6 +158,20 @@ func codexSSEPayloadComplete(payload []byte) bool {
 		return true
 	}
 	return json.Valid(trimmed)
+}
+
+func codexSSELooksLikeNewEventStart(dataLine []byte) bool {
+	trimmed := bytes.TrimSpace(dataLine)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if bytes.Equal(trimmed, []byte("[DONE]")) {
+		return true
+	}
+	if !json.Valid(trimmed) {
+		return false
+	}
+	return gjson.GetBytes(trimmed, "type").Exists()
 }
 
 // Streamed Codex responses may emit response.output_item.done events while leaving
@@ -603,7 +631,72 @@ nonStreamRetryLoop:
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
 		decoder := codexSSEDecoder{}
-		for _, event := range append(decoder.Feed(data), decoder.Flush()...) {
+		for _, event := range decoder.Feed(data) {
+			eventData := event.Payload
+			eventType := gjson.GetBytes(eventData, "type").String()
+
+			if streamErr, ok := codexTerminalStreamContextLengthErr(eventData); ok {
+				err = streamErr
+				return resp, err
+			}
+
+			if eventType == "response.output_item.done" {
+				itemResult := gjson.GetBytes(eventData, "item")
+				if !itemResult.Exists() || itemResult.Type != gjson.JSON {
+					continue
+				}
+				outputIndexResult := gjson.GetBytes(eventData, "output_index")
+				if outputIndexResult.Exists() {
+					outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
+				} else {
+					outputItemsFallback = append(outputItemsFallback, []byte(itemResult.Raw))
+				}
+				continue
+			}
+
+			if eventType != "response.completed" {
+				continue
+			}
+
+			responseModel := helps.ExtractCodexResponseModel(eventData)
+			if filterEligible {
+				match, inspected := codexretryfilter.MatchCompletedEvent(filterCfg, eventData)
+				if inspected {
+					var reasoningTokens *int64
+					if tokens, ok := codexretryfilter.ExtractReasoningTokens(eventData); ok {
+						reasoningTokens = &tokens
+					}
+					action := codexretryfilter.DecideAction(match, filterCfg.InterceptNonStreaming, remainingFilterRetries)
+					codexretryfilter.RecordAttemptBestEffort(filterCtx, codexRetryFilterAttemptRecord(filterRequestID, auth, baseModel, req.Model, responseModel, false, reasoningTokens, match, action, remainingFilterRetries, filterAttempt))
+					if action == codexretryfilter.ActionInternalRetry {
+						reporter.ResetTTFT()
+						remainingFilterRetries--
+						filterAttempt++
+						continue nonStreamRetryLoop
+					}
+					if action == codexretryfilter.ActionConductorRetry && match != nil {
+						err = codexretryfilter.NewRetryError(*match)
+						return resp, err
+					}
+				}
+			}
+
+			if detail, ok := helps.ParseCodexUsage(eventData); ok {
+				reporter.SetResponseModel(responseModel)
+				reporter.Publish(filterCtx, detail)
+			}
+			publishCodexImageToolUsage(filterCtx, reporter, body, eventData)
+
+			completedData := patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
+			var param any
+			out := sdktranslator.TranslateNonStream(filterCtx, to, from, req.Model, originalPayload, body, completedData, &param)
+			resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+			if filterEligible {
+				codexretryfilter.MarkFinalSuccessBestEffort(filterCtx, filterRequestID)
+			}
+			return resp, nil
+		}
+		for _, event := range decoder.Flush() {
 			eventData := event.Payload
 			eventType := gjson.GetBytes(eventData, "type").String()
 

@@ -193,6 +193,35 @@ func TestCodexExecutorResponseRetryFilterStreamRetriesOnMultiLineData(t *testing
 	}
 }
 
+func TestCodexSSEDecoderWaitsForBlockTerminationBeforeFlushingValidFirstLine(t *testing.T) {
+	decoder := codexSSEDecoder{}
+
+	events := decoder.Feed([]byte("event: response.completed\n"))
+	if len(events) != 0 {
+		t.Fatalf("events after event line = %d, want 0", len(events))
+	}
+
+	events = decoder.Feed([]byte("data: {\"type\":\"response.completed\"}\n"))
+	if len(events) != 0 {
+		t.Fatalf("events after first valid data line = %d, want 0", len(events))
+	}
+
+	events = decoder.Feed([]byte("data: {\"response\":{\"id\":\"resp_1\"}}\n"))
+	if len(events) != 0 {
+		t.Fatalf("events before blank line = %d, want 0", len(events))
+	}
+
+	events = decoder.Feed([]byte("\n"))
+	if len(events) != 1 {
+		t.Fatalf("events after blank line = %d, want 1", len(events))
+	}
+
+	payload := string(events[0].Payload)
+	if payload != "{\"type\":\"response.completed\"}\n{\"response\":{\"id\":\"resp_1\"}}" {
+		t.Fatalf("payload = %q", payload)
+	}
+}
+
 func TestCodexExecutorResponseRetryFilterIgnoresNonResponseProtocol(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
