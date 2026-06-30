@@ -53,7 +53,7 @@ The feature reuses the configured usage SQLite path and stores data in independe
 - `codex_response_retry_filter_attempts_rollup_hourly`
 - `codex_response_retry_filter_hits_rollup_hourly`
 
-Writes are best effort. A failed stats insert logs a warning and does not fail the proxied request.
+Writes are best effort. A failed stats insert logs a warning and does not fail the proxied request. Hit rows are recorded only after the paired attempt row is stored successfully so management breakdowns cannot drift because of orphaned hit-only records.
 
 Management query performance is optimized in three layers:
 
