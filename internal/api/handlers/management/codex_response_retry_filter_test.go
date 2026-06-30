@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -121,13 +122,64 @@ func TestCodexResponseRetryFilterStatsAndHits(t *testing.T) {
 		t.Fatalf("hits status = %d, want 200: %s", recHits.Code, recHits.Body.String())
 	}
 	var hitsBody struct {
-		Hits []codexretryfilter.HitRecord `json:"hits"`
+		Hits               []codexretryfilter.HitRecord `json:"hits"`
+		NextBeforeOccurred *string                      `json:"next_before_occurred_at"`
+		NextBeforeID       *int64                       `json:"next_before_id"`
+		HasMore            bool                         `json:"has_more"`
 	}
 	if err := json.Unmarshal(recHits.Body.Bytes(), &hitsBody); err != nil {
 		t.Fatalf("decode hits: %v", err)
 	}
 	if len(hitsBody.Hits) != 1 || hitsBody.Hits[0].MatchedLength != 516 {
 		t.Fatalf("hits = %#v, want one 516 hit", hitsBody.Hits)
+	}
+	if hitsBody.HasMore {
+		t.Fatalf("has_more = true, want false")
+	}
+}
+
+func TestCodexResponseRetryFilterPrune(t *testing.T) {
+	ctx := context.Background()
+	store, err := codexretryfilter.OpenStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	length := int64(516)
+	oldRecord := codexretryfilter.AttemptRecord{
+		RequestID:       "req-old",
+		OccurredAt:      time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC),
+		ProviderKey:     "codex",
+		AuthID:          "auth-1",
+		Model:           "gpt-5-codex",
+		Eligible:        true,
+		Matched:         true,
+		ReasoningTokens: &length,
+		MatchedLength:   &length,
+		Action:          codexretryfilter.ActionInternalRetry,
+	}
+	if err := store.InsertAttempt(ctx, oldRecord); err != nil {
+		t.Fatalf("InsertAttempt() error = %v", err)
+	}
+	if err := store.InsertHit(ctx, oldRecord); err != nil {
+		t.Fatalf("InsertHit() error = %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetCodexRetryFilterQueryService(store)
+
+	c, rec := managementTestContext(http.MethodDelete, "/v0/management/codex-response-retry-filter/prune?before=2026-07-01T10:00:00Z", "")
+	h.PruneCodexResponseRetryFilter(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("prune status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var result codexretryfilter.PruneResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode prune: %v", err)
+	}
+	if result.DeletedAttempts != 1 || result.DeletedHits != 1 {
+		t.Fatalf("prune result = %#v", result)
 	}
 }
 

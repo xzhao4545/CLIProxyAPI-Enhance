@@ -50,8 +50,18 @@ The feature reuses the configured usage SQLite path and stores data in independe
 
 - `codex_response_retry_filter_attempts`
 - `codex_response_retry_filter_hits`
+- `codex_response_retry_filter_attempts_rollup_hourly`
+- `codex_response_retry_filter_hits_rollup_hourly`
 
 Writes are best effort. A failed stats insert logs a warning and does not fail the proxied request.
+
+Management query performance is optimized in three layers:
+
+- recent hits support cursor-style pagination using `before_occurred_at` and `before_id`, while `offset` remains accepted for compatibility
+- stats responses use a short in-process cache for repeated identical filters
+- stats queries use hourly rollup tables for full-hour windows and combine them with raw-table head/tail reads when a selected range is not hour-aligned
+
+The stats rollups are rebuilt automatically on store initialization when the rollup schema version changes. A successful request finalization updates both raw hit rows and hourly hit rollups so retry success metrics stay consistent.
 
 Stable action values are:
 
@@ -69,8 +79,18 @@ Management routes are under `/v0/management`:
 - `PATCH /codex-response-retry-filter`
 - `GET /codex-response-retry-filter/stats`
 - `GET /codex-response-retry-filter/hits`
+- `DELETE /codex-response-retry-filter/prune`
 
 Stats include attempts, hits, hit rate, retry success rate, internal retries, conductor retries, observe-only hits, and breakdowns by model, auth, reasoning-token length, and action.
+
+The hits response now returns:
+
+- `hits`
+- `has_more`
+- `next_before_occurred_at`
+- `next_before_id`
+
+The prune endpoint requires a `before` query parameter and deletes raw retry-filter rows older than that timestamp, then rebuilds the hourly rollups in the same maintenance flow.
 
 ## Management Panel
 

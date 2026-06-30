@@ -99,7 +99,24 @@ func (h *Handler) GetCodexResponseRetryFilterHits(c *gin.Context) {
 		return
 	}
 	hits, err := service.QueryHits(c.Request.Context(), filter)
-	writeCodexRetryFilterResponse(c, gin.H{"hits": hits}, err)
+	writeCodexRetryFilterResponse(c, hits, err)
+}
+
+func (h *Handler) PruneCodexResponseRetryFilter(c *gin.Context) {
+	service := h.codexRetryFilterQueryService()
+	if service == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "codex response retry filter stats unavailable"})
+		return
+	}
+	before, ok := parseCodexRetryFilterTime(c, "before")
+	if !ok || before == nil {
+		if ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "missing before time"})
+		}
+		return
+	}
+	result, err := service.PruneOlderThan(c.Request.Context(), *before)
+	writeCodexRetryFilterResponse(c, result, err)
 }
 
 func applyCodexRetryFilterBody(runtime *codexretryfilter.RuntimeConfig, body codexRetryFilterConfigBody) {
@@ -173,6 +190,14 @@ func parseCodexRetryFilterQuery(c *gin.Context) (codexretryfilter.QueryFilter, b
 	if !ok {
 		return codexretryfilter.QueryFilter{}, false
 	}
+	beforeOccurredAt, ok := parseCodexRetryFilterTime(c, "before_occurred_at")
+	if !ok {
+		return codexretryfilter.QueryFilter{}, false
+	}
+	beforeID, ok := parseCodexRetryFilterInt64(c, "before_id")
+	if !ok {
+		return codexretryfilter.QueryFilter{}, false
+	}
 	return codexretryfilter.QueryFilter{
 		DateFrom:      dateFrom,
 		DateTo:        dateTo,
@@ -180,6 +205,8 @@ func parseCodexRetryFilterQuery(c *gin.Context) (codexretryfilter.QueryFilter, b
 		AuthID:        c.Query("auth_id"),
 		MatchedLength: matchedLength,
 		Action:        c.Query("action"),
+		BeforeTime:    beforeOccurredAt,
+		BeforeID:      beforeID,
 		Limit:         limit,
 		Offset:        offset,
 	}, true

@@ -2,6 +2,7 @@ package codexretryfilter
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -120,11 +121,174 @@ func TestStoreInsertQueryStatsAndHits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryHits() error = %v", err)
 	}
-	if len(hits) != 1 {
-		t.Fatalf("hits len = %d, want 1", len(hits))
+	if len(hits.Hits) != 1 {
+		t.Fatalf("hits len = %d, want 1", len(hits.Hits))
 	}
-	if hit := hits[0]; !hit.Stream || !hit.Retried || !hit.FinalSuccess || hit.GuardRetryRemaining != 2 {
+	if hit := hits.Hits[0]; !hit.Stream || !hit.Retried || !hit.FinalSuccess || hit.GuardRetryRemaining != 2 {
 		t.Fatalf("hit flags = stream:%v retried:%v final:%v remaining:%d", hit.Stream, hit.Retried, hit.FinalSuccess, hit.GuardRetryRemaining)
+	}
+}
+
+func TestStoreQueryHitsCursorPagination(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	tokens := int64(516)
+	for i := 0; i < 3; i++ {
+		record := AttemptRecord{
+			RequestID:       fmt.Sprintf("req-%d", i),
+			OccurredAt:      time.Unix(int64(100+i), 0).UTC(),
+			ProviderKey:     "codex",
+			AuthID:          "auth-1",
+			AuthLabel:       "Primary",
+			Model:           "gpt-5-codex",
+			Eligible:        true,
+			Matched:         true,
+			ReasoningTokens: &tokens,
+			MatchedLength:   &tokens,
+			Action:          ActionInternalRetry,
+		}
+		if err := store.InsertAttempt(ctx, record); err != nil {
+			t.Fatalf("InsertAttempt(%d) error = %v", i, err)
+		}
+		if err := store.InsertHit(ctx, record); err != nil {
+			t.Fatalf("InsertHit(%d) error = %v", i, err)
+		}
+	}
+
+	page1, err := store.QueryHits(ctx, QueryFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("QueryHits(page1) error = %v", err)
+	}
+	if len(page1.Hits) != 2 || !page1.HasMore || page1.NextBeforeOccurred == nil || page1.NextBeforeID == nil {
+		t.Fatalf("page1 = %#v", page1)
+	}
+	if page1.Hits[0].OccurredAt.Before(page1.Hits[1].OccurredAt) {
+		t.Fatalf("page1 ordering invalid: %#v", page1.Hits)
+	}
+
+	page2, err := store.QueryHits(ctx, QueryFilter{
+		Limit:      2,
+		BeforeTime: page1.NextBeforeOccurred,
+		BeforeID:   *page1.NextBeforeID,
+	})
+	if err != nil {
+		t.Fatalf("QueryHits(page2) error = %v", err)
+	}
+	if len(page2.Hits) != 1 || page2.HasMore {
+		t.Fatalf("page2 = %#v", page2)
+	}
+	if !page2.Hits[0].OccurredAt.Before(page1.Hits[1].OccurredAt) {
+		t.Fatalf("page2 first hit not older than page1 tail: page1=%#v page2=%#v", page1.Hits, page2.Hits)
+	}
+}
+
+func TestStoreQueryStatsUsesRollupForFullHourWindow(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	tokens := int64(516)
+	occurred := time.Date(2026, 7, 1, 10, 5, 0, 0, time.UTC)
+	record := AttemptRecord{
+		RequestID:       "req-rollup",
+		OccurredAt:      occurred,
+		ProviderKey:     "codex",
+		AuthID:          "auth-rollup",
+		AuthLabel:       "Rollup",
+		Model:           "gpt-5-codex",
+		Eligible:        true,
+		Matched:         true,
+		ReasoningTokens: &tokens,
+		MatchedLength:   &tokens,
+		Action:          ActionInternalRetry,
+	}
+	if err := store.InsertAttempt(ctx, record); err != nil {
+		t.Fatalf("InsertAttempt() error = %v", err)
+	}
+	if err := store.InsertHit(ctx, record); err != nil {
+		t.Fatalf("InsertHit() error = %v", err)
+	}
+	if err := store.MarkFinalSuccess(ctx, record.RequestID); err != nil {
+		t.Fatalf("MarkFinalSuccess() error = %v", err)
+	}
+
+	from := occurred.Truncate(time.Hour)
+	to := from.Add(time.Hour)
+	stats, err := store.QueryStats(ctx, QueryFilter{
+		DateFrom: &from,
+		DateTo:   &to,
+	})
+	if err != nil {
+		t.Fatalf("QueryStats() error = %v", err)
+	}
+	if stats.Attempts != 1 || stats.Hits != 1 || stats.FinalSuccessesAfterHit != 1 {
+		t.Fatalf("stats = %#v, want attempts/hits/success = 1/1/1", stats)
+	}
+	if stats.RetrySuccessRate != 1 {
+		t.Fatalf("retry success rate = %v, want 1", stats.RetrySuccessRate)
+	}
+	if len(stats.ByAuth) != 1 || stats.ByAuth[0].Label != "Rollup" {
+		t.Fatalf("by auth = %#v", stats.ByAuth)
+	}
+}
+
+func TestStorePruneOlderThan(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	tokens := int64(516)
+	oldRecord := AttemptRecord{
+		RequestID:       "req-old",
+		OccurredAt:      time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC),
+		ProviderKey:     "codex",
+		AuthID:          "auth-1",
+		Model:           "gpt-5-codex",
+		Eligible:        true,
+		Matched:         true,
+		ReasoningTokens: &tokens,
+		MatchedLength:   &tokens,
+		Action:          ActionInternalRetry,
+	}
+	newRecord := oldRecord
+	newRecord.RequestID = "req-new"
+	newRecord.OccurredAt = time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	for _, record := range []AttemptRecord{oldRecord, newRecord} {
+		if err := store.InsertAttempt(ctx, record); err != nil {
+			t.Fatalf("InsertAttempt(%s) error = %v", record.RequestID, err)
+		}
+		if err := store.InsertHit(ctx, record); err != nil {
+			t.Fatalf("InsertHit(%s) error = %v", record.RequestID, err)
+		}
+	}
+
+	before := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	pruned, err := store.PruneOlderThan(ctx, before)
+	if err != nil {
+		t.Fatalf("PruneOlderThan() error = %v", err)
+	}
+	if pruned.DeletedAttempts != 1 || pruned.DeletedHits != 1 {
+		t.Fatalf("pruned = %#v, want 1 attempt and 1 hit deleted", pruned)
+	}
+
+	stats, err := store.QueryStats(ctx, QueryFilter{})
+	if err != nil {
+		t.Fatalf("QueryStats() error = %v", err)
+	}
+	if stats.Attempts != 1 || stats.Hits != 1 {
+		t.Fatalf("stats after prune = %#v, want attempts/hits = 1/1", stats)
 	}
 }
 

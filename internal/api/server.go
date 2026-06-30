@@ -732,6 +732,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/codex-response-retry-filter", s.mgmt.PatchCodexResponseRetryFilter)
 		mgmt.GET("/codex-response-retry-filter/stats", s.mgmt.GetCodexResponseRetryFilterStats)
 		mgmt.GET("/codex-response-retry-filter/hits", s.mgmt.GetCodexResponseRetryFilterHits)
+		mgmt.DELETE("/codex-response-retry-filter/prune", s.mgmt.PruneCodexResponseRetryFilter)
 
 		mgmt.GET("/oauth-excluded-models", s.mgmt.GetOAuthExcludedModels)
 		mgmt.PUT("/oauth-excluded-models", s.mgmt.PutOAuthExcludedModels)

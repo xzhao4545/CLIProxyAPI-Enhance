@@ -54,8 +54,23 @@ type QueryFilter struct {
 	AuthID        string
 	MatchedLength int64
 	Action        string
+	BeforeTime    *time.Time
+	BeforeID      int64
 	Limit         int
 	Offset        int
+}
+
+type HitsResult struct {
+	Hits               []HitRecord `json:"hits"`
+	NextBeforeOccurred *time.Time  `json:"next_before_occurred_at,omitempty"`
+	NextBeforeID       *int64      `json:"next_before_id,omitempty"`
+	HasMore            bool        `json:"has_more"`
+}
+
+type PruneResult struct {
+	Before          time.Time `json:"before"`
+	DeletedAttempts int64     `json:"deleted_attempts"`
+	DeletedHits     int64     `json:"deleted_hits"`
 }
 
 type Breakdown struct {
@@ -94,5 +109,6 @@ type Stats struct {
 
 type QueryService interface {
 	QueryStats(ctx context.Context, filter QueryFilter) (Stats, error)
-	QueryHits(ctx context.Context, filter QueryFilter) ([]HitRecord, error)
+	QueryHits(ctx context.Context, filter QueryFilter) (HitsResult, error)
+	PruneOlderThan(ctx context.Context, before time.Time) (PruneResult, error)
 }
