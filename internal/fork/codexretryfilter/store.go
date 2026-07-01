@@ -277,6 +277,10 @@ LIMIT ?`
 	}
 	result := HitsResult{Hits: out}
 	if useOffset {
+		if len(out) > limit {
+			result.Hits = out[:limit]
+			result.HasMore = true
+		}
 		return result, nil
 	}
 	if len(out) > limit {

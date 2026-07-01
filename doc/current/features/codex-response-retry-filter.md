@@ -81,7 +81,7 @@ Management routes are under `/v0/management`:
 - `GET /codex-response-retry-filter/hits`
 - `DELETE /codex-response-retry-filter/prune`
 
-Stats include attempts, hits, hit rate, retry success rate, internal retries, conductor retries, observe-only hits, and breakdowns by model, auth, reasoning-token length, and action.
+Stats include attempts, hits, hit rate, retry success rate, internal retries, conductor retries, observe-only hits, and breakdowns by model, auth, reasoning-token length, and action. Model breakdown rows return the model name in `key` and leave `label` empty; auth breakdown rows return `auth_id` in `key` and the recorded auth label in `label` when available.
 
 The hits response now returns:
 

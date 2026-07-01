@@ -231,15 +231,20 @@ func (s *Store) queryBreakdown(ctx context.Context, filter QueryFilter, column s
 	if column != "model" && column != "auth_id" {
 		return nil, fmt.Errorf("unsupported codex retry filter breakdown column %q", column)
 	}
+	includeLabel := column == "auth_id"
 	hitsWhere, hitsArgs := buildWhere(filter)
 	attemptsWhere, attemptsArgs := buildAttemptWhere(filter)
-	attempts, err := s.countByColumn(ctx, "codex_response_retry_filter_attempts", column, attemptsWhere, attemptsArgs, column == "auth_id")
+	attempts, err := s.countByColumn(ctx, "codex_response_retry_filter_attempts", column, attemptsWhere, attemptsArgs, includeLabel)
 	if err != nil {
 		return nil, err
 	}
+	selectLabel := "''"
+	if includeLabel {
+		selectLabel = "MAX(COALESCE(NULLIF(auth_label, ''), ''))"
+	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT COALESCE(`+column+`, '') AS key,
-	MAX(COALESCE(NULLIF(auth_label, ''), '')) AS label,
+	`+selectLabel+` AS label,
 	COUNT(*) AS hits,
 	COALESCE(SUM(CASE WHEN final_success = 1 THEN 1 ELSE 0 END), 0) AS final_successes
 FROM codex_response_retry_filter_hits`+hitsWhere+`
@@ -296,7 +301,7 @@ ORDER BY hits DESC, key ASC`, hitsArgs...)
 			HitRate:          ratio(hit.hits, attempts[key].Attempts),
 			RetrySuccessRate: ratio(hit.successes, hit.hits),
 		}
-		if row.Label == "" {
+		if includeLabel && row.Label == "" {
 			row.Label = hit.label
 		}
 		out = append(out, row)
@@ -542,13 +547,14 @@ func (s *Store) queryBreakdownRollup(ctx context.Context, filter QueryFilter, co
 	if column != "model" && column != "auth_id" {
 		return nil, fmt.Errorf("unsupported codex retry filter rollup breakdown column %q", column)
 	}
+	includeLabel := column == "auth_id"
 	attemptsWhere, attemptsArgs := buildAttemptsRollupWhere(filter)
 	hitsWhere, hitsArgs := buildHitsRollupWhere(filter)
-	attempts, err := s.countByColumnRollup(ctx, "codex_response_retry_filter_attempts_rollup_hourly", column, "attempts", attemptsWhere, attemptsArgs, column == "auth_id")
+	attempts, err := s.countByColumnRollup(ctx, "codex_response_retry_filter_attempts_rollup_hourly", column, "attempts", attemptsWhere, attemptsArgs, includeLabel)
 	if err != nil {
 		return nil, err
 	}
-	hits, err := s.countHitsBreakdownRollup(ctx, column, hitsWhere, hitsArgs)
+	hits, err := s.countHitsBreakdownRollup(ctx, column, hitsWhere, hitsArgs, includeLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -572,7 +578,7 @@ func (s *Store) queryBreakdownRollup(ctx context.Context, filter QueryFilter, co
 		attempt := attempts[key]
 		hit := hits[key]
 		label := attempt.Label
-		if label == "" {
+		if includeLabel && label == "" {
 			label = hit.Label
 		}
 		out = append(out, Breakdown{
@@ -623,10 +629,14 @@ GROUP BY COALESCE(`+column+`, '')`, args...)
 	return out, rows.Err()
 }
 
-func (s *Store) countHitsBreakdownRollup(ctx context.Context, column, where string, args []any) (map[string]rollupHitBreakdown, error) {
+func (s *Store) countHitsBreakdownRollup(ctx context.Context, column, where string, args []any, includeLabel bool) (map[string]rollupHitBreakdown, error) {
+	selectLabel := "''"
+	if includeLabel {
+		selectLabel = "MAX(COALESCE(NULLIF(auth_label, ''), ''))"
+	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT COALESCE(`+column+`, '') AS key,
-	MAX(COALESCE(NULLIF(auth_label, ''), '')) AS label,
+	`+selectLabel+` AS label,
 	COALESCE(SUM(hits), 0) AS hits,
 	COALESCE(SUM(final_successes), 0) AS final_successes
 FROM codex_response_retry_filter_hits_rollup_hourly`+where+`

@@ -97,6 +97,9 @@ func TestStoreInsertQueryStatsAndHits(t *testing.T) {
 		stats.ByModel[1].Key != "gpt-4.1-codex" || stats.ByModel[1].Attempts != 1 || stats.ByModel[1].Hits != 0 {
 		t.Fatalf("by model = %#v, want hit and zero-hit attempt rows", stats.ByModel)
 	}
+	if stats.ByModel[0].Label != "" || stats.ByModel[1].Label != "" {
+		t.Fatalf("by model labels = %#v, want empty labels for model breakdown", stats.ByModel)
+	}
 	if len(stats.ByAuth) != 2 ||
 		stats.ByAuth[0].Key != "auth-1" || stats.ByAuth[0].Label != "Primary" || stats.ByAuth[0].Attempts != 2 || stats.ByAuth[0].Hits != 1 ||
 		stats.ByAuth[1].Key != "auth-2" || stats.ByAuth[1].Label != "Secondary" || stats.ByAuth[1].Attempts != 1 || stats.ByAuth[1].Hits != 0 {
@@ -237,6 +240,9 @@ func TestStoreQueryStatsUsesRollupForFullHourWindow(t *testing.T) {
 	}
 	if len(stats.ByAuth) != 1 || stats.ByAuth[0].Label != "Rollup" {
 		t.Fatalf("by auth = %#v", stats.ByAuth)
+	}
+	if len(stats.ByModel) != 1 || stats.ByModel[0].Key != "gpt-5-codex" || stats.ByModel[0].Label != "" {
+		t.Fatalf("by model = %#v, want model key without auth label in rollup stats", stats.ByModel)
 	}
 }
 
