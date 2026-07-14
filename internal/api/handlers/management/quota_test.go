@@ -132,3 +132,168 @@ func TestResetQuota_DoesNotAcceptAuthIDOrFileName(t *testing.T) {
 		})
 	}
 }
+
+func TestListUnavailable_ReturnsReasonAndRetrySeconds(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	next := time.Now().Add(2 * time.Minute)
+	auth := &coreauth.Auth{
+		ID:       "list-unavail-auth",
+		FileName: "list-unavail.json",
+		Provider: "codex",
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-5": {
+				Status:         coreauth.StatusError,
+				StatusMessage:  "quota exhausted",
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota:          coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+			},
+		},
+	}
+	authIndex := auth.EnsureIndex()
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/unavailable?provider=codex", nil)
+	ctx.Request = req
+	h.ListUnavailable(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Total int `json:"total"`
+		Items []struct {
+			AuthIndex         string `json:"auth_index"`
+			Model             string `json:"model"`
+			Reason            string `json:"reason"`
+			RetryAfterSeconds int64  `json:"retry_after_seconds"`
+			Blocking          bool   `json:"blocking"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Total != 1 || len(payload.Items) != 1 {
+		t.Fatalf("payload = %+v, want 1 item", payload)
+	}
+	item := payload.Items[0]
+	if item.AuthIndex != authIndex || item.Model != "gpt-5" || item.Reason != "quota" || !item.Blocking {
+		t.Fatalf("item = %+v", item)
+	}
+	if item.RetryAfterSeconds <= 0 {
+		t.Fatalf("retry_after_seconds = %d, want > 0", item.RetryAfterSeconds)
+	}
+}
+
+func TestResetQuota_WithModelField(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	next := time.Now().Add(time.Hour)
+	auth := &coreauth.Auth{
+		ID:       "reset-model-auth",
+		FileName: "reset-model.json",
+		Provider: "codex",
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-5": {
+				Status:         coreauth.StatusError,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota:          coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+			},
+			"gpt-4.1": {
+				Status:         coreauth.StatusError,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota:          coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+			},
+		},
+	}
+	authIndex := auth.EnsureIndex()
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	body := `{"auth_index":"` + authIndex + `","model":"gpt-5"}`
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/reset-quota", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.ResetQuota(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("reset-model-auth")
+	if !ok || updated == nil {
+		t.Fatal("auth missing after reset")
+	}
+	if st := updated.ModelStates["gpt-5"]; st == nil || st.Unavailable || !st.NextRetryAfter.IsZero() {
+		t.Fatalf("gpt-5 = %+v, want cleared", st)
+	}
+	if st := updated.ModelStates["gpt-4.1"]; st == nil || !st.Unavailable {
+		t.Fatalf("gpt-4.1 = %+v, want still unavailable", st)
+	}
+}
+
+func TestResetQuotaAll_ClearsMatchingProvider(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	next := time.Now().Add(time.Hour)
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID: "all-1", FileName: "all-1.json", Provider: "codex",
+			ModelStates: map[string]*coreauth.ModelState{
+				"gpt-5": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}},
+			},
+		},
+		{
+			ID: "all-2", FileName: "all-2.json", Provider: "claude",
+			ModelStates: map[string]*coreauth.ModelState{
+				"claude-sonnet": {Status: coreauth.StatusError, Unavailable: true, NextRetryAfter: next, Quota: coreauth.QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}},
+			},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/reset-quota-all", strings.NewReader(`{"provider":"codex"}`))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.ResetQuotaAll(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["reset_count"] != float64(1) {
+		t.Fatalf("reset_count = %#v, want 1", payload["reset_count"])
+	}
+
+	codex, _ := manager.GetByID("all-1")
+	if st := codex.ModelStates["gpt-5"]; st == nil || st.Unavailable {
+		t.Fatalf("codex model still unavailable: %+v", st)
+	}
+	claude, _ := manager.GetByID("all-2")
+	if st := claude.ModelStates["claude-sonnet"]; st == nil || !st.Unavailable {
+		t.Fatalf("claude model should remain unavailable: %+v", st)
+	}
+}

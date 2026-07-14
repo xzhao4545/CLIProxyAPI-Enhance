@@ -798,6 +798,98 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	return snapshot, models, nil
 }
 
+// ResetQuotaModel clears quota/cooldown state for one model under an auth and resumes registry routing.
+func (m *Manager) ResetQuotaModel(ctx context.Context, authID, model string) (*Auth, error) {
+	if m == nil {
+		return nil, nil
+	}
+	authID = strings.TrimSpace(authID)
+	model = strings.TrimSpace(model)
+	if authID == "" {
+		return nil, fmt.Errorf("auth id is required")
+	}
+	if model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+
+	now := time.Now()
+	var snapshot *Auth
+	cooldownStateChanged := false
+	resumeModels := []string{model}
+
+	m.mu.Lock()
+	auth, ok := m.auths[authID]
+	if !ok || auth == nil {
+		m.mu.Unlock()
+		return nil, nil
+	}
+
+	var cooldownRecordsBefore []CooldownStateRecord
+	trackCooldownState := m.cooldownStore != nil
+	if trackCooldownState {
+		cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
+	}
+
+	stateKey := model
+	state := auth.ModelStates[stateKey]
+	if state == nil {
+		base := canonicalModelKey(model)
+		if base != "" && base != model {
+			if alt := auth.ModelStates[base]; alt != nil {
+				stateKey = base
+				state = alt
+				resumeModels = []string{model, base}
+			}
+		}
+	}
+	if state != nil {
+		resetModelState(state, now)
+	}
+	// Also clear auth-level cooldown when it is model-agnostic or fully expired by aggregation.
+	if len(auth.ModelStates) == 0 {
+		_ = clearCooldownStateForAuth(auth, now)
+	} else {
+		updateAggregatedAvailability(auth, now)
+		// If no model remains blocked and auth-level cooldown was set independently, clear it.
+		if !hasModelError(auth, now) {
+			if auth.Unavailable || !auth.NextRetryAfter.IsZero() || auth.Quota.Exceeded || !auth.Quota.NextRecoverAt.IsZero() {
+				auth.Unavailable = false
+				auth.NextRetryAfter = time.Time{}
+				auth.Quota = QuotaState{}
+			}
+		}
+	}
+
+	if !auth.Disabled && auth.Status != StatusDisabled && !hasModelError(auth, now) {
+		auth.LastError = nil
+		auth.StatusMessage = ""
+		auth.Status = StatusActive
+	}
+	auth.UpdatedAt = now
+	if errPersist := m.persist(ctx, auth); errPersist != nil {
+		m.mu.Unlock()
+		return nil, errPersist
+	}
+	snapshot = auth.Clone()
+	if trackCooldownState {
+		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
+		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+	}
+	m.mu.Unlock()
+
+	for _, modelKey := range dedupeStrings(resumeModels) {
+		registry.GetGlobalRegistry().ClearModelQuotaExceeded(authID, modelKey)
+		registry.GetGlobalRegistry().ResumeClientModel(authID, modelKey)
+	}
+	if m.scheduler != nil && snapshot != nil {
+		m.scheduler.upsertAuth(snapshot)
+	}
+	if snapshot != nil && cooldownStateChanged {
+		m.persistCooldownStates(ctx)
+	}
+	return snapshot, nil
+}
+
 func modelsForRegisteredAuth(authID string) []string {
 	supportedModels := registry.GetGlobalRegistry().GetModelsForClient(authID)
 	models := make([]string, 0, len(supportedModels))
