@@ -919,6 +919,13 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	return httpClient.Do(httpReq)
 }
 
+func codexIncompleteStreamErr() statusErr {
+	return statusErr{
+		code: http.StatusRequestTimeout,
+		msg:  "OpenAI responses stream closed before a terminal response event was received: stream closed before response.completed",
+	}
+}
+
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
@@ -1074,7 +1081,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 		return resp, nil
 	}
-	err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+	err = codexIncompleteStreamErr()
 	return resp, err
 }
 
@@ -1297,6 +1304,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		terminalSeen := false
 		for scanner.Scan() {
 			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -1326,6 +1334,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				case "response.output_item.done":
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
+					terminalSeen = true
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						reporter.SetResponseModel(helps.ExtractCodexResponseModel(data))
 						reporter.Publish(ctx, detail)
@@ -1354,6 +1363,19 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
 			}
+			return
+		}
+		if terminalSeen {
+			return
+		}
+		// Upstream closed the SSE stream without a terminal response.completed event.
+		// Record the incomplete attempt so usage SQLite and management stats still see it.
+		incompleteErr := codexIncompleteStreamErr()
+		helps.RecordAPIResponseError(ctx, e.cfg, incompleteErr)
+		reporter.PublishFailure(ctx, incompleteErr)
+		select {
+		case out <- cliproxyexecutor.StreamChunk{Err: incompleteErr}:
+		case <-ctx.Done():
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

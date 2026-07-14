@@ -313,7 +313,12 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			sendError(errScan)
+			return
 		}
+		incompleteErr := codexIncompleteStreamErr()
+		helps.RecordAPIResponseError(ctx, e.cfg, incompleteErr)
+		reporter.PublishFailure(ctx, incompleteErr)
+		sendError(incompleteErr)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }

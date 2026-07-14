@@ -190,12 +190,23 @@ func ServiceTierFromContext(ctx context.Context) string {
 // WithFailureOverride installs a mutable request-scoped usage failure marker.
 // The marker lets late stream wrappers classify an already-started provider
 // attempt as failed without coupling every executor to wrapper-level checks.
+// When a marker already exists on ctx it is reused so nested wrappers share state.
 func WithFailureOverride(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if failureOverrideFromContext(ctx) != nil {
 		return ctx
+	}
+	return WithFreshFailureOverride(ctx)
+}
+
+// WithFreshFailureOverride always installs a new request-scoped failure marker.
+// Use it for each independent upstream attempt so deferred usage from a failed
+// attempt can be flushed without contaminating the next retry/fallback attempt.
+func WithFreshFailureOverride(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return context.WithValue(ctx, failureOverrideContextKey{}, &failureOverrideState{})
 }
@@ -242,6 +253,8 @@ func FlushFailureOverrideRecords(ctx context.Context) {
 	}
 	state.records = nil
 	state.fallback = nil
+	// Keep failed/failure so publishNow can still reclassify records in this flush.
+	// Callers that start a new attempt must install a fresh override state.
 	state.mu.Unlock()
 	for _, item := range records {
 		if item.manager == nil {

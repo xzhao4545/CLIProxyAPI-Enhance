@@ -658,6 +658,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		terminalSeen := false
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 		var pendingEventLine []byte
 		emitTranslatedLine := func(translatedLine []byte) bool {
@@ -700,6 +701,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 					case "response.completed":
+						terminalSeen = true
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							reporter.SetResponseModel(helps.ExtractOpenAIStreamResponseModel(eventData))
 							reporter.Publish(ctx, detail)
@@ -747,6 +749,20 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
 			}
+			return
+		}
+		if terminalSeen {
+			return
+		}
+		incompleteErr := statusErr{
+			code: http.StatusRequestTimeout,
+			msg:  "OpenAI responses stream closed before a terminal response event was received: stream closed before response.completed",
+		}
+		helps.RecordAPIResponseError(ctx, e.cfg, incompleteErr)
+		reporter.PublishFailure(ctx, incompleteErr)
+		select {
+		case out <- cliproxyexecutor.StreamChunk{Err: incompleteErr}:
+		case <-ctx.Done():
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
