@@ -38,3 +38,35 @@ func TestSetReasoningEffortMetadataSupportsOpenAIResponses(t *testing.T) {
 		t.Fatalf("ReasoningEffortMetadataKey = %v, want %q", got, "medium")
 	}
 }
+
+func TestSetServiceTierMetadataExtractsValue(t *testing.T) {
+	meta := make(map[string]any)
+
+	setServiceTierMetadata(meta, []byte(`{"service_tier":"priority"}`))
+
+	gotServiceTier := meta[coreexecutor.ServiceTierMetadataKey]
+	if gotServiceTier != "priority" {
+		t.Fatalf("ServiceTierMetadataKey = %v, want %q", gotServiceTier, "priority")
+	}
+}
+
+func TestSetServiceTierMetadataDefaultsWhenMissing(t *testing.T) {
+	meta := make(map[string]any)
+
+	setServiceTierMetadata(meta, []byte(`{"model":"gpt-5.4"}`))
+
+	gotServiceTier := meta[coreexecutor.ServiceTierMetadataKey]
+	if gotServiceTier != "auto" {
+		t.Fatalf("ServiceTierMetadataKey = %v, want %q", gotServiceTier, "auto")
+	}
+}
+
+func TestSetServiceTierMetadataPreservesExplicitDefault(t *testing.T) {
+	meta := make(map[string]any)
+
+	setServiceTierMetadata(meta, []byte(`{"service_tier":"default"}`))
+
+	if gotServiceTier := meta[coreexecutor.ServiceTierMetadataKey]; gotServiceTier != "default" {
+		t.Fatalf("ServiceTierMetadataKey = %v, want %q", gotServiceTier, "default")
+	}
+}

@@ -35,6 +35,11 @@ Current fork-owned packages:
 - `internal/fork/usage/` implements persistent SQLite usage recording and query APIs.
 - `internal/fork/keywordfilter/` implements response content keyword matching for provider failure detection.
 
+
+## Amp Integration
+
+Fork retains the Amp routing module under `internal/api/modules/amp`. It is registered from `internal/api/server.go`, hot-reloads through `UpdateClients` when `config.AmpCode` changes, and exposes management routes under `/v0/management/ampcode`.
+
 ## Management Surface
 
 Management endpoints live under `/v0/management` and are enabled only when a management secret is available from config, environment, or local runtime options. All management endpoints pass through management availability and key middleware.

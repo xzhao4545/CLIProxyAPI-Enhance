@@ -10,26 +10,43 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// DefaultServiceTier is retained for direct SDK and non-OpenAI usage callers.
+const DefaultServiceTier = "default"
+
+// AutoServiceTier is the OpenAI request semantics when service_tier is omitted.
+// OpenAI HTTP handlers set it explicitly, without changing other providers'
+// historical direct-SDK default.
+const AutoServiceTier = "auto"
+
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
 	Provider      string
 	ProviderLabel string
-	Model         string
-	Alias         string
-	APIKey        string
-	AuthID        string
-	AuthLabel     string
-	AuthIndex     string
-	AuthType      string
-	Source        string
+	// ExecutorType stores the concrete executor type that handled the request.
+	ExecutorType string
+	Model        string
+	Alias        string
+	APIKey       string
+	AuthID       string
+	AuthLabel    string
+	AuthIndex    string
+	AuthType     string
+	Source       string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
-	RequestedAt     time.Time
-	Latency         time.Duration
-	TTFT            time.Duration
-	Failed          bool
-	Fail            Failure
-	Detail          Detail
+	// ServiceTier stores the client-requested service tier.
+	ServiceTier string
+	// RequestServiceTier is a deprecated input-only alias retained for existing
+	// plugin callers. It is normalized into ServiceTier and never emitted.
+	RequestServiceTier string
+	// ResponseServiceTier stores the final tier reported by the upstream response.
+	ResponseServiceTier string
+	RequestedAt         time.Time
+	Latency             time.Duration
+	TTFT                time.Duration
+	Failed              bool
+	Fail                Failure
+	Detail              Detail
 	// Stream indicates whether the request was served in streaming mode.
 	Stream bool
 	// ResponseModel stores the model name returned by the upstream provider in its
@@ -57,10 +74,12 @@ type Detail struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64
+	ResponseServiceTier string
 }
 
 type requestedModelAliasContextKey struct{}
 type reasoningEffortContextKey struct{}
+type serviceTierContextKey struct{}
 type failureOverrideContextKey struct{}
 
 type failureOverrideState struct {
@@ -129,6 +148,42 @@ func ReasoningEffortFromContext(ctx context.Context) string {
 		return strings.TrimSpace(string(value))
 	default:
 		return ""
+	}
+}
+
+// WithServiceTier stores the client-requested service tier for usage sinks.
+func WithServiceTier(ctx context.Context, tier string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tier = strings.TrimSpace(tier)
+	if tier == "" {
+		tier = DefaultServiceTier
+	}
+	return context.WithValue(ctx, serviceTierContextKey{}, tier)
+}
+
+// ServiceTierFromContext returns the client-requested service tier stored in ctx.
+func ServiceTierFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return DefaultServiceTier
+	}
+	raw := ctx.Value(serviceTierContextKey{})
+	switch value := raw.(type) {
+	case string:
+		tier := strings.TrimSpace(value)
+		if tier == "" {
+			return DefaultServiceTier
+		}
+		return tier
+	case []byte:
+		tier := strings.TrimSpace(string(value))
+		if tier == "" {
+			return DefaultServiceTier
+		}
+		return tier
+	default:
+		return DefaultServiceTier
 	}
 }
 
@@ -254,22 +309,19 @@ type Manager struct {
 	stopOnce sync.Once
 	cancel   context.CancelFunc
 
-	mu       sync.Mutex
-	cond     *sync.Cond
-	queue    []queueItem
-	capacity int
-	closed   bool
+	mu     sync.Mutex
+	cond   *sync.Cond
+	queue  []queueItem
+	closed bool
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
+	named     map[string]int
 }
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	if buffer <= 0 {
-		buffer = 1
-	}
-	m := &Manager{capacity: buffer}
+	m := &Manager{}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -315,8 +367,34 @@ func (m *Manager) Register(plugin Plugin) {
 	m.pluginsMu.Unlock()
 }
 
+// RegisterNamed registers or replaces a plugin by name.
+func (m *Manager) RegisterNamed(name string, plugin Plugin) {
+	if m == nil || plugin == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+
+	m.pluginsMu.Lock()
+	if m.named == nil {
+		m.named = make(map[string]int)
+	}
+	if index, exists := m.named[name]; exists && index >= 0 && index < len(m.plugins) {
+		m.plugins[index] = plugin
+		m.pluginsMu.Unlock()
+		return
+	}
+	m.named[name] = len(m.plugins)
+	m.plugins = append(m.plugins, plugin)
+	m.pluginsMu.Unlock()
+}
+
 // Publish enqueues a usage record for processing. If no plugin is registered
 // the record will be discarded downstream.
+// When a request-scoped failure override is active, the record is deferred until
+// FlushFailureOverrideRecords so late stream classifiers can re-mark outcomes.
 func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m == nil {
 		return
@@ -331,17 +409,15 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 }
 
 func (m *Manager) publishNow(ctx context.Context, record Record) {
+	if m == nil {
+		return
+	}
 	record = ApplyFailureOverride(ctx, record)
 	// ensure worker is running even if Start was not called explicitly
 	m.Start(context.Background())
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return
-	}
-	if len(m.queue) >= m.capacity {
-		m.mu.Unlock()
-		log.Debug("usage: manager queue full; dropping usage record")
 		return
 	}
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
@@ -367,7 +443,6 @@ func (m *Manager) run(ctx context.Context) {
 }
 
 func (m *Manager) dispatch(item queueItem) {
-	item.record = ApplyFailureOverride(item.ctx, item.record)
 	m.pluginsMu.RLock()
 	plugins := make([]Plugin, len(m.plugins))
 	copy(plugins, m.plugins)
@@ -399,6 +474,9 @@ func DefaultManager() *Manager { return defaultManager }
 
 // RegisterPlugin registers a plugin on the default manager.
 func RegisterPlugin(plugin Plugin) { DefaultManager().Register(plugin) }
+
+// RegisterNamedPlugin registers or replaces a named plugin on the default manager.
+func RegisterNamedPlugin(name string, plugin Plugin) { DefaultManager().RegisterNamed(name, plugin) }
 
 // PublishRecord publishes a record using the default manager.
 func PublishRecord(ctx context.Context, record Record) { DefaultManager().Publish(ctx, record) }
