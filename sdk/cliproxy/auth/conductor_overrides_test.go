@@ -252,25 +252,6 @@ func (e *retryAfterStatusError) RetryAfter() *time.Duration {
 	return &d
 }
 
-type syntheticRetryError struct {
-	message string
-}
-
-func (e syntheticRetryError) Error() string {
-	if e.message == "" {
-		return "synthetic retry"
-	}
-	return e.message
-}
-
-func (e syntheticRetryError) StatusCode() int {
-	return http.StatusTooManyRequests
-}
-
-func (e syntheticRetryError) RetryableAuthFailure() bool {
-	return true
-}
-
 func newCredentialRetryLimitTestManager(t *testing.T, maxRetryCredentials int) (*Manager, *credentialRetryLimitExecutor) {
 	t.Helper()
 
@@ -351,73 +332,6 @@ func TestManager_MaxRetryCredentials_LimitsCrossCredentialRetries(t *testing.T) 
 				t.Fatalf("expected 2 calls with max-retry-credentials=0, got %d", calls)
 			}
 		})
-	}
-}
-
-func TestManager_RetryableAuthFailureFallsBackWithoutQuotaPenalty(t *testing.T) {
-	m := NewManager(nil, nil, nil)
-	executor := &authFallbackExecutor{
-		id: "claude",
-		executeErrors: map[string]error{
-			"aa-filtered-auth": syntheticRetryError{message: "codex_response_retry_filtered"},
-		},
-		streamFirstErrors: map[string]error{
-			"aa-filtered-auth": syntheticRetryError{message: "codex_response_retry_filtered"},
-		},
-	}
-	m.RegisterExecutor(executor)
-
-	model := "claude-opus-4-6"
-	filteredAuth := &Auth{ID: "aa-filtered-auth", Provider: "claude"}
-	goodAuth := &Auth{ID: "bb-good-auth", Provider: "claude"}
-
-	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient(filteredAuth.ID, "claude", []*registry.ModelInfo{{ID: model}})
-	reg.RegisterClient(goodAuth.ID, "claude", []*registry.ModelInfo{{ID: model}})
-	t.Cleanup(func() {
-		reg.UnregisterClient(filteredAuth.ID)
-		reg.UnregisterClient(goodAuth.ID)
-	})
-
-	if _, errRegister := m.Register(context.Background(), filteredAuth); errRegister != nil {
-		t.Fatalf("register filtered auth: %v", errRegister)
-	}
-	if _, errRegister := m.Register(context.Background(), goodAuth); errRegister != nil {
-		t.Fatalf("register good auth: %v", errRegister)
-	}
-
-	resp, errExecute := m.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
-	if errExecute != nil {
-		t.Fatalf("execute error = %v, want success", errExecute)
-	}
-	if string(resp.Payload) != goodAuth.ID {
-		t.Fatalf("execute payload = %q, want %q", string(resp.Payload), goodAuth.ID)
-	}
-
-	streamResult, errStream := m.ExecuteStream(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
-	if errStream != nil {
-		t.Fatalf("execute stream error = %v, want success", errStream)
-	}
-	var streamPayload []byte
-	for chunk := range streamResult.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("stream chunk error = %v", chunk.Err)
-		}
-		streamPayload = append(streamPayload, chunk.Payload...)
-	}
-	if string(streamPayload) != goodAuth.ID {
-		t.Fatalf("stream payload = %q, want %q", string(streamPayload), goodAuth.ID)
-	}
-
-	updated, ok := m.GetByID(filteredAuth.ID)
-	if !ok || updated == nil {
-		t.Fatalf("expected filtered auth to remain registered")
-	}
-	if updated.Failed != 0 || updated.Quota.Exceeded || !updated.NextRetryAfter.IsZero() || updated.StatusMessage != "" || updated.LastError != nil {
-		t.Fatalf("filtered auth was penalized: failed=%d quota=%#v next=%v status=%q err=%#v", updated.Failed, updated.Quota, updated.NextRetryAfter, updated.StatusMessage, updated.LastError)
-	}
-	if state := updated.ModelStates[model]; state != nil && (state.Unavailable || !state.NextRetryAfter.IsZero() || state.Quota.Exceeded) {
-		t.Fatalf("filtered model state was penalized: %#v", state)
 	}
 }
 

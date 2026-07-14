@@ -18,18 +18,6 @@
 - 有可用备用供应商时，命中失败可触发供应商故障转移和冷却
 - 可通过 `/v0/management/keyword-filters` 或管理面板维护规则
 
-### Codex Responses 重试过滤
-- 面向 Codex/OpenAI Responses 协议的临时重试保护，用于处理特定 reasoning token 长度下的异常完成模式
-- 支持配置启用状态、模型 glob 匹配、命中 reasoning token 长度、流式/非流式拦截以及保护重试次数
-- 默认匹配 `gpt-*` 模型以及 `516`、`1034`、`1552` 三个 reasoning token 长度
-- 命中后会在内部或调度器中自动重试，不会把合成的重试错误返回给客户端
-- 基于 SQLite 记录检查次数、命中次数、命中率、重试成功率、命中长度、动作、认证标签和最近命中详情
-- 可通过 `/v0/management/codex-response-retry-filter` 或配套管理面板页面进行配置和查看
-- 该功能需要使用配套前端
-  [xzhao4545/Cli-Proxy-API-Management-Center-Ehance](https://github.com/xzhao4545/Cli-Proxy-API-Management-Center-Ehance)
-  中对应实现，包括 `src/pages/CodexRetryFilterPage.tsx`、`src/pages/CodexRetryFilterPage.module.scss`
-  以及相关语言包条目。旧版本前端不包含该页面。
-
 ### 提供商自定义标签
 - 可为 AI 提供商设置自定义名称（`label` 字段）
 - 在管理面板提供商列表中显示为标签名，未设置时自动生成 `{brand}#{序号}` 格式
@@ -54,19 +42,6 @@ keyword-filters:
     case-sensitive: false
     enabled: true
 
-# Codex/OpenAI Responses 重试过滤配置
-codex-response-retry-filter:
-  enabled: false
-  models:
-    - "gpt-*"
-  reasoning-token-lengths:
-    - 516
-    - 1034
-    - 1552
-  intercept-streaming: true
-  intercept-non-streaming: true
-  guard-retry-attempts: 3
-
 # 远程管理面板地址配置
 remote-management:
   panel-github-repository: https://github.com/xzhao4545/Cli-Proxy-API-Management-Center-Ehance
@@ -74,10 +49,6 @@ remote-management:
 ```
 
 ## 截图
-
-### Codex Responses 重试过滤
-
-![Codex Responses 重试过滤](img/516-retry.png)
 
 ### 使用统计
 

@@ -74,36 +74,6 @@ func (codexOnlyFailureExecutor) HttpRequest(context.Context, *Auth, *http.Reques
 	return nil, &Error{HTTPStatus: http.StatusTooManyRequests, Message: "codex quota exhausted"}
 }
 
-type antigravitySyntheticRetryExecutor struct {
-	creditsExecuteCalls int
-}
-
-func (e *antigravitySyntheticRetryExecutor) Identifier() string { return "antigravity" }
-
-func (e *antigravitySyntheticRetryExecutor) Execute(ctx context.Context, _ *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	if AntigravityCreditsRequested(ctx) {
-		e.creditsExecuteCalls++
-		return cliproxyexecutor.Response{Payload: []byte("credits fallback")}, nil
-	}
-	return cliproxyexecutor.Response{}, syntheticRetryError{message: "codex_response_retry_filtered"}
-}
-
-func (e *antigravitySyntheticRetryExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	return nil, syntheticRetryError{message: "codex_response_retry_filtered"}
-}
-
-func (e *antigravitySyntheticRetryExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
-	return auth, nil
-}
-
-func (e *antigravitySyntheticRetryExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, syntheticRetryError{message: "codex_response_retry_filtered"}
-}
-
-func (e *antigravitySyntheticRetryExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
-	return nil, syntheticRetryError{message: "codex_response_retry_filtered"}
-}
-
 type captureLogHook struct {
 	messages []string
 }
@@ -154,32 +124,6 @@ func TestManagerExecuteStream_AntigravityCreditsFallbackAfterBootstrap429(t *tes
 	}
 	if executor.streamCreditsRequested[0] || !executor.streamCreditsRequested[1] {
 		t.Fatalf("credits flags = %v, want [false true]", executor.streamCreditsRequested)
-	}
-}
-
-func TestManagerExecute_DoesNotUseAntigravityCreditsFallbackForRetryableAuthFailure(t *testing.T) {
-	const model = "claude-opus-4-6-thinking"
-	executor := &antigravitySyntheticRetryExecutor{}
-	manager := NewManager(nil, nil, nil)
-	manager.SetConfig(&internalconfig.Config{
-		QuotaExceeded: internalconfig.QuotaExceeded{AntigravityCredits: true},
-	})
-	manager.RegisterExecutor(executor)
-	registry.GetGlobalRegistry().RegisterClient("ag-synthetic-retry", "antigravity", []*registry.ModelInfo{{ID: model}})
-	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient("ag-synthetic-retry") })
-	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "ag-synthetic-retry", Provider: "antigravity"}); errRegister != nil {
-		t.Fatalf("register auth: %v", errRegister)
-	}
-
-	_, errExecute := manager.Execute(context.Background(), []string{"antigravity"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
-	if errExecute == nil {
-		t.Fatal("execute error = nil, want synthetic retry error")
-	}
-	if !isRetryableAuthFailure(errExecute) {
-		t.Fatalf("execute error = %T %v, want retryable auth failure", errExecute, errExecute)
-	}
-	if executor.creditsExecuteCalls != 0 {
-		t.Fatalf("credits execute calls = %d, want 0", executor.creditsExecuteCalls)
 	}
 }
 

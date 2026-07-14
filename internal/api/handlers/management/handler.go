@@ -15,7 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/fork/codexretryfilter"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"golang.org/x/crypto/bcrypt"
@@ -47,7 +46,6 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
-	codexRetryFilter    codexretryfilter.QueryService
 }
 
 // NewHandler creates a new management handler instance.
@@ -121,24 +119,6 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	h.mu.Lock()
 	h.authManager = manager
 	h.mu.Unlock()
-}
-
-func (h *Handler) SetCodexRetryFilterQueryService(service codexretryfilter.QueryService) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	h.codexRetryFilter = service
-	h.mu.Unlock()
-}
-
-func (h *Handler) codexRetryFilterQueryService() codexretryfilter.QueryService {
-	if h == nil {
-		return nil
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.codexRetryFilter
 }
 
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.
