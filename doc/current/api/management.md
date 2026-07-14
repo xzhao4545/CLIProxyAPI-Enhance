@@ -38,11 +38,12 @@ Query parameters:
 
 - `provider` (optional)
 - `auth_index` (optional)
-- `model` (optional)
+- `model` (optional; exact key or canonical name, case-insensitive)
 - `active_only` (default `true`): only entries still inside a future cooldown window
 - `include_nonblocking` (default `false`): include `unavailable` markers with no `next_retry_after` (these do not block routing)
 
 Response fields include `reason`, `next_retry_after`, `retry_after_seconds`, `blocking`, `quota`, and `last_error`.
+`total` counts returned rows (auth-level and model-level entries are listed separately when both exist).
 
 ```json
 {
@@ -70,6 +71,8 @@ Response fields include `reason`, `next_retry_after`, `retry_after_seconds`, `bl
 {"auth_index":"…","model":"gpt-5"}
 ```
 
+Unknown `model` under the auth returns HTTP 404.
+
 ### Reset all
 
 `POST /v0/management/reset-quota-all` clears cooldown for every auth that currently has runtime cooldown state. Optional body:
@@ -79,6 +82,7 @@ Response fields include `reason`, `next_retry_after`, `retry_after_seconds`, `bl
 ```
 
 This path reuses the same `ResetQuota` clearing logic (memory, registry resume, scheduler, optional `.cds` persistence). It does not change operator `disabled` flags.
+If a later auth fails mid-loop, the response is HTTP 500 with `"status":"partial"` plus the already-cleared `auth_indexes` / `reset_count`.
 
 ## Keyword Filter Routes
 

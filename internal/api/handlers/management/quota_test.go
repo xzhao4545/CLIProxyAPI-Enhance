@@ -245,6 +245,37 @@ func TestResetQuota_WithModelField(t *testing.T) {
 	}
 }
 
+func TestResetQuota_ModelNotFound(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "reset-missing-model",
+		FileName: "reset-missing-model.json",
+		Provider: "codex",
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-5": {Status: coreauth.StatusActive},
+		},
+	}
+	authIndex := auth.EnsureIndex()
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	body := `{"auth_index":"` + authIndex + `","model":"missing-model"}`
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/reset-quota", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.ResetQuota(ctx)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body=%s, want 404", rec.Code, rec.Body.String())
+	}
+}
+
 func TestResetQuotaAll_ClearsMatchingProvider(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 

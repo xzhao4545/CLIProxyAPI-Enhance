@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -100,6 +101,31 @@ func TestListUnavailable_FiltersAndNonBlocking(t *testing.T) {
 	}
 }
 
+func TestListUnavailable_ModelFilterCanonicalCaseInsensitive(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	next := time.Now().Add(time.Hour)
+	auth := &Auth{
+		ID:       "auth-model-filter",
+		Provider: "codex",
+		ModelStates: map[string]*ModelState{
+			"GPT-5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	items := manager.ListUnavailable(UnavailableFilter{ActiveOnly: true, Model: "gpt-5"})
+	if len(items) != 1 || items[0].Model != "GPT-5" {
+		t.Fatalf("items = %+v, want GPT-5 match via case-insensitive filter", items)
+	}
+}
+
 func TestResetQuotaModel_ClearsOnlyTargetModel(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	next := time.Now().Add(time.Hour)
@@ -141,5 +167,101 @@ func TestResetQuotaModel_ClearsOnlyTargetModel(t *testing.T) {
 	kept := updated.ModelStates["gpt-4.1"]
 	if kept == nil || !kept.Unavailable || kept.NextRetryAfter.IsZero() {
 		t.Fatalf("gpt-4.1 state = %+v, want still cooling", kept)
+	}
+}
+
+func TestResetQuotaModel_PreservesSiblingAndAggregatedQuota(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	next := time.Now().Add(time.Hour)
+	// Sibling is StatusActive + Unavailable (hasModelError would miss it).
+	// Auth-level Unavailable means *all* models blocked; after clearing one model,
+	// aggregation correctly clears auth.Unavailable. Auth quota must still reflect the sibling.
+	auth := &Auth{
+		ID:             "auth-agg-preserve",
+		Provider:       "codex",
+		Unavailable:    true,
+		NextRetryAfter: next,
+		Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next, BackoffLevel: 2},
+		ModelStates: map[string]*ModelState{
+			"gpt-5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next, BackoffLevel: 1},
+			},
+			"gpt-4.1": {
+				Status:         StatusActive,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next, BackoffLevel: 3},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	updated, err := manager.ResetQuotaModel(context.Background(), auth.ID, "gpt-5")
+	if err != nil {
+		t.Fatalf("ResetQuotaModel: %v", err)
+	}
+	if updated == nil {
+		t.Fatal("updated is nil")
+	}
+	// Not all models blocked → auth.Unavailable should be false (aggregation).
+	if updated.Unavailable {
+		t.Fatal("auth.Unavailable = true after partial model clear, want false")
+	}
+	// Sibling still cooling and auth quota must remain aggregated from it.
+	kept := updated.ModelStates["gpt-4.1"]
+	if kept == nil || !kept.Unavailable || kept.NextRetryAfter.IsZero() {
+		t.Fatalf("sibling = %+v, want still cooling", kept)
+	}
+	if !updated.Quota.Exceeded || updated.Quota.BackoffLevel != 3 {
+		t.Fatalf("auth.Quota = %+v, want exceeded with sibling backoff 3", updated.Quota)
+	}
+}
+func TestResetQuotaModel_NotFound(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-missing-model",
+		Provider: "codex",
+		ModelStates: map[string]*ModelState{
+			"gpt-5": {Status: StatusActive},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	_, err := manager.ResetQuotaModel(context.Background(), auth.ID, "does-not-exist")
+	if !errors.Is(err, ErrModelStateNotFound) {
+		t.Fatalf("err = %v, want ErrModelStateNotFound", err)
+	}
+}
+
+func TestClearCooldownStateForAuth_IncludesBackoffLevel(t *testing.T) {
+	now := time.Now()
+	auth := &Auth{
+		ID:    "auth-backoff-only",
+		Quota: QuotaState{BackoffLevel: 3},
+		ModelStates: map[string]*ModelState{
+			"gpt-5": {Quota: QuotaState{BackoffLevel: 2}},
+		},
+	}
+	if !auth.HasCooldownState() {
+		t.Fatal("HasCooldownState = false for backoff-only, want true")
+	}
+	if !clearCooldownStateForAuth(auth, now) {
+		t.Fatal("clearCooldownStateForAuth changed = false, want true")
+	}
+	if auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("auth backoff = %d, want 0", auth.Quota.BackoffLevel)
+	}
+	if auth.ModelStates["gpt-5"].Quota.BackoffLevel != 0 {
+		t.Fatalf("model backoff = %d, want 0", auth.ModelStates["gpt-5"].Quota.BackoffLevel)
+	}
+	if auth.HasCooldownState() {
+		t.Fatal("HasCooldownState still true after clear")
 	}
 }

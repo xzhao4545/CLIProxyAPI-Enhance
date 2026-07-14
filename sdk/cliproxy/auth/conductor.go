@@ -667,12 +667,40 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 	return true
 }
 
+func hasQuotaCooldownSignals(unavailable bool, nextRetry time.Time, quota QuotaState) bool {
+	return unavailable ||
+		!nextRetry.IsZero() ||
+		quota.Exceeded ||
+		!quota.NextRecoverAt.IsZero() ||
+		quota.BackoffLevel != 0 ||
+		strings.TrimSpace(quota.Reason) != ""
+}
+
+// HasCooldownState reports whether auth-level or any model still carries cooldown/quota signals.
+func (a *Auth) HasCooldownState() bool {
+	if a == nil {
+		return false
+	}
+	if hasQuotaCooldownSignals(a.Unavailable, a.NextRetryAfter, a.Quota) {
+		return true
+	}
+	for _, state := range a.ModelStates {
+		if state == nil {
+			continue
+		}
+		if hasQuotaCooldownSignals(state.Unavailable, state.NextRetryAfter, state.Quota) {
+			return true
+		}
+	}
+	return false
+}
+
 func clearCooldownStateForAuth(auth *Auth, now time.Time) bool {
 	if auth == nil {
 		return false
 	}
 	changed := false
-	if auth.Unavailable || !auth.NextRetryAfter.IsZero() || auth.Quota.Exceeded || !auth.Quota.NextRecoverAt.IsZero() {
+	if hasQuotaCooldownSignals(auth.Unavailable, auth.NextRetryAfter, auth.Quota) {
 		auth.Unavailable = false
 		auth.NextRetryAfter = time.Time{}
 		auth.Quota = QuotaState{}
@@ -683,7 +711,7 @@ func clearCooldownStateForAuth(auth *Auth, now time.Time) bool {
 		if state == nil {
 			continue
 		}
-		if state.Unavailable || !state.NextRetryAfter.IsZero() || state.Quota.Exceeded || !state.Quota.NextRecoverAt.IsZero() {
+		if hasQuotaCooldownSignals(state.Unavailable, state.NextRetryAfter, state.Quota) {
 			state.Unavailable = false
 			state.NextRetryAfter = time.Time{}
 			state.Quota = QuotaState{}
@@ -798,6 +826,9 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	return snapshot, models, nil
 }
 
+// ErrModelStateNotFound is returned when ResetQuotaModel cannot find the target model state.
+var ErrModelStateNotFound = errors.New("model state not found")
+
 // ResetQuotaModel clears quota/cooldown state for one model under an auth and resumes registry routing.
 func (m *Manager) ResetQuotaModel(ctx context.Context, authID, model string) (*Auth, error) {
 	if m == nil {
@@ -830,34 +861,41 @@ func (m *Manager) ResetQuotaModel(ctx context.Context, authID, model string) (*A
 		cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 	}
 
-	stateKey := model
-	state := auth.ModelStates[stateKey]
+	state := auth.ModelStates[model]
 	if state == nil {
 		base := canonicalModelKey(model)
 		if base != "" && base != model {
 			if alt := auth.ModelStates[base]; alt != nil {
-				stateKey = base
 				state = alt
 				resumeModels = []string{model, base}
 			}
 		}
 	}
-	if state != nil {
-		resetModelState(state, now)
+	if state == nil {
+		// Also accept reverse match: stored key is alias, request is base (or vice versa).
+		for key, candidate := range auth.ModelStates {
+			if candidate == nil {
+				continue
+			}
+			if modelKeyMatchesFilter(key, model) {
+				state = candidate
+				resumeModels = dedupeStrings([]string{model, key, canonicalModelKey(model), canonicalModelKey(key)})
+				break
+			}
+		}
 	}
-	// Also clear auth-level cooldown when it is model-agnostic or fully expired by aggregation.
+	if state == nil {
+		m.mu.Unlock()
+		return nil, ErrModelStateNotFound
+	}
+
+	resetModelState(state, now)
+	// Model states drive aggregation. Never wipe auth-level state with the narrower
+	// hasModelError check — that can drop still-cooling siblings.
 	if len(auth.ModelStates) == 0 {
 		_ = clearCooldownStateForAuth(auth, now)
 	} else {
 		updateAggregatedAvailability(auth, now)
-		// If no model remains blocked and auth-level cooldown was set independently, clear it.
-		if !hasModelError(auth, now) {
-			if auth.Unavailable || !auth.NextRetryAfter.IsZero() || auth.Quota.Exceeded || !auth.Quota.NextRecoverAt.IsZero() {
-				auth.Unavailable = false
-				auth.NextRetryAfter = time.Time{}
-				auth.Quota = QuotaState{}
-			}
-		}
 	}
 
 	if !auth.Disabled && auth.Status != StatusDisabled && !hasModelError(auth, now) {
@@ -878,6 +916,9 @@ func (m *Manager) ResetQuotaModel(ctx context.Context, authID, model string) (*A
 	m.mu.Unlock()
 
 	for _, modelKey := range dedupeStrings(resumeModels) {
+		if strings.TrimSpace(modelKey) == "" {
+			continue
+		}
 		registry.GetGlobalRegistry().ClearModelQuotaExceeded(authID, modelKey)
 		registry.GetGlobalRegistry().ResumeClientModel(authID, modelKey)
 	}

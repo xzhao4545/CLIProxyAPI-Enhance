@@ -80,7 +80,7 @@ func (m *Manager) ListUnavailable(filter UnavailableFilter) []UnavailableEntry {
 			if modelKey == "" || state == nil {
 				continue
 			}
-			if modelFilter != "" && modelKey != modelFilter {
+			if modelFilter != "" && !modelKeyMatchesFilter(modelKey, modelFilter) {
 				continue
 			}
 			if entry, ok := unavailableEntryFromModel(auth, modelKey, state, now, filter); ok {
@@ -95,6 +95,31 @@ func (m *Manager) ListUnavailable(filter UnavailableFilter) []UnavailableEntry {
 		}
 	}
 	return out
+}
+
+// modelKeyMatchesFilter accepts exact key match or shared canonical model name
+// (thinking suffix stripped), case-insensitive.
+func modelKeyMatchesFilter(modelKey, filter string) bool {
+	modelKey = strings.TrimSpace(modelKey)
+	filter = strings.TrimSpace(filter)
+	if modelKey == "" || filter == "" {
+		return false
+	}
+	if strings.EqualFold(modelKey, filter) {
+		return true
+	}
+	keyCanon := canonicalModelKey(modelKey)
+	filterCanon := canonicalModelKey(filter)
+	if keyCanon != "" && filterCanon != "" && strings.EqualFold(keyCanon, filterCanon) {
+		return true
+	}
+	if keyCanon != "" && strings.EqualFold(keyCanon, filter) {
+		return true
+	}
+	if filterCanon != "" && strings.EqualFold(modelKey, filterCanon) {
+		return true
+	}
+	return false
 }
 
 func unavailableEntryFromAuth(auth *Auth, now time.Time, filter UnavailableFilter) (UnavailableEntry, bool) {

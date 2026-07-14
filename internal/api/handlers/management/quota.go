@@ -1,6 +1,7 @@
 package management
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -106,6 +107,10 @@ func (h *Handler) ResetQuota(c *gin.Context) {
 	if model != "" {
 		updated, errReset := h.authManager.ResetQuotaModel(c.Request.Context(), auth.ID, model)
 		if errReset != nil {
+			if errors.Is(errReset, coreauth.ErrModelStateNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "model not found"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to reset quota model: %v", errReset)})
 			return
 		}
@@ -143,6 +148,7 @@ func (h *Handler) ResetQuota(c *gin.Context) {
 }
 
 // ResetQuotaAll clears quota/cooldown routing state for all auths, optionally filtered by provider.
+// On partial failure it still returns the auths already cleared so operators can see progress.
 func (h *Handler) ResetQuotaAll(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -172,14 +178,19 @@ func (h *Handler) ResetQuotaAll(c *gin.Context) {
 			continue
 		}
 		// Skip auths that currently have nothing to clear to keep response focused.
-		if !authHasCooldownState(auth) {
+		if !auth.HasCooldownState() {
 			continue
 		}
 		updated, models, errReset := h.authManager.ResetQuota(c.Request.Context(), auth.ID)
 		if errReset != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":      fmt.Sprintf("failed to reset quota for auth %s: %v", auth.ID, errReset),
-				"auth_index": auth.Index,
+				"error":          fmt.Sprintf("failed to reset quota for auth %s: %v", auth.ID, errReset),
+				"auth_index":     auth.Index,
+				"status":         "partial",
+				"reset_count":    len(resetAuthIndexes),
+				"auth_indexes":   resetAuthIndexes,
+				"models_cleared": modelsCleared,
+				"provider":       strings.TrimSpace(req.Provider),
 			})
 			return
 		}
@@ -198,22 +209,4 @@ func (h *Handler) ResetQuotaAll(c *gin.Context) {
 		"models_cleared": modelsCleared,
 		"provider":       strings.TrimSpace(req.Provider),
 	})
-}
-
-func authHasCooldownState(auth *coreauth.Auth) bool {
-	if auth == nil {
-		return false
-	}
-	if auth.Unavailable || !auth.NextRetryAfter.IsZero() || auth.Quota.Exceeded || !auth.Quota.NextRecoverAt.IsZero() || auth.Quota.BackoffLevel != 0 {
-		return true
-	}
-	for _, state := range auth.ModelStates {
-		if state == nil {
-			continue
-		}
-		if state.Unavailable || !state.NextRetryAfter.IsZero() || state.Quota.Exceeded || !state.Quota.NextRecoverAt.IsZero() || state.Quota.BackoffLevel != 0 {
-			return true
-		}
-	}
-	return false
 }
