@@ -57,6 +57,10 @@ Usage records keep stable provider keys, auth IDs, auth labels, and auth indexes
 
 Filter option responses expose the same statistics provider identity as the provider key, plus display labels, auth IDs, and auth positions where available. Selecting a provider label filters all matching provider indexes together through the `provider` query parameter; callers that need the original stored provider key can use `raw_provider`.
 
+## Panel Filtering
+
+The management panel's usage page lists filterable dimensions as table-header dropdowns. Dropdowns whose option lists can grow long (provider, model, client model, response model) include a search field inside the open menu; typing narrows the option list client-side without reloading data. Short enumerations (auth type, stream, status, page size) stay as plain dropdowns.
+
 ## Request Lifecycle Fields
 
 Each usage event captures the full request lifecycle:
