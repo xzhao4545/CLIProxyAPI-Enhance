@@ -37,9 +37,8 @@ func SetTransientErrorCooldownSeconds(seconds int) {
 
 // SetTransientFailureCoolDownMinFailures configures the minimum consecutive transient-failure
 // count (HTTP 500/502/503/504) for an auth+model before the model enters cooldown/unavailable.
-// Values below 1 are clamped to 1 (immediate cooling); the default of 3 means the first two
-// transient failures leave the model immediately retryable, allowing multi-attempt retries
-// performed by the gateway/client to complete before a cooldown is recorded.
+// Values below 1 are clamped to the default of 3; pass 1 explicitly to restore the legacy
+// "cool down immediately on first transient failure" behavior.
 func SetTransientFailureCoolDownMinFailures(n int) {
 	if n < 1 {
 		n = 3 // default: 3 consecutive failures before transient cooling
@@ -1751,6 +1750,9 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
 	case 408, 500, 502, 503, 504:
+		// Auth-level transient failures (model unknown / failed before model dispatch)
+		// still cool immediately - the per-model deferred-cooldown ladder in MarkResult
+		// only applies once a concrete (auth, model) pair is known.
 		auth.StatusMessage = "transient upstream error"
 		auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
 		auth.Unavailable = !auth.NextRetryAfter.IsZero()
