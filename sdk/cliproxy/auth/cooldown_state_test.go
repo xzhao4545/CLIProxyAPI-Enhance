@@ -219,6 +219,10 @@ func TestFileCooldownStateStore_ConcurrentSave(t *testing.T) {
 }
 
 func TestManager_MarkResult_PersistsCooldownOnlyWhenStateChanges(t *testing.T) {
+	prevMinFail := transientFailureCoolDownMinFailures.Load()
+	SetTransientFailureCoolDownMinFailures(1)
+	t.Cleanup(func() { transientFailureCoolDownMinFailures.Store(prevMinFail) })
+
 	store := &recordingCooldownStateStore{}
 	manager := NewManager(nil, nil, nil)
 	manager.SetCooldownStateStore(store)

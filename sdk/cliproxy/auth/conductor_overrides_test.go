@@ -747,9 +747,12 @@ func TestManager_MarkResult_TransientErrorCooldownDefault(t *testing.T) {
 	quotaCooldownDisabled.Store(false)
 	prevTransient := transientErrorCooldownSeconds.Load()
 	SetTransientErrorCooldownSeconds(0)
+	prevMinFail := transientFailureCoolDownMinFailures.Load()
+	SetTransientFailureCoolDownMinFailures(1) // legacy immediate cooling
 	t.Cleanup(func() {
 		quotaCooldownDisabled.Store(prevQuota)
 		transientErrorCooldownSeconds.Store(prevTransient)
+		transientFailureCoolDownMinFailures.Store(prevMinFail)
 	})
 
 	m := NewManager(nil, nil, nil)

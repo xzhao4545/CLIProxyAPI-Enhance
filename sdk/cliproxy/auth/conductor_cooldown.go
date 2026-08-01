@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +22,8 @@ var quotaCooldownDisabled atomic.Bool
 
 var transientErrorCooldownSeconds atomic.Int64
 
+var transientFailureCoolDownMinFailures atomic.Int64
+
 // SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
 func SetQuotaCooldownDisabled(disable bool) {
 	quotaCooldownDisabled.Store(disable)
@@ -30,6 +33,84 @@ func SetQuotaCooldownDisabled(disable bool) {
 // 0 keeps the legacy default; negative values disable transient error cooldowns.
 func SetTransientErrorCooldownSeconds(seconds int) {
 	transientErrorCooldownSeconds.Store(int64(seconds))
+}
+
+// SetTransientFailureCoolDownMinFailures configures the minimum consecutive transient-failure
+// count (HTTP 500/502/503/504) for an auth+model before the model enters cooldown/unavailable.
+// Values below 1 are clamped to 1 (immediate cooling); the default of 3 means the first two
+// transient failures leave the model immediately retryable, allowing multi-attempt retries
+// performed by the gateway/client to complete before a cooldown is recorded.
+func SetTransientFailureCoolDownMinFailures(n int) {
+	if n < 1 {
+		n = 3 // default: 3 consecutive failures before transient cooling
+	}
+	transientFailureCoolDownMinFailures.Store(int64(n))
+}
+
+// transientFailureCoolDownThreshold returns the effective minimum-failure count.
+func transientFailureCoolDownThreshold() int64 {
+	if v := transientFailureCoolDownMinFailures.Load(); v > 0 {
+		return v
+	}
+	return 3
+}
+
+// transientFailureKey identifies a (auth, model) pair for the consecutive-failure counter.
+func transientFailureKey(authID, model string) string {
+	if model == "" {
+		return authID
+	}
+	return authID + "|" + model
+}
+
+// transientFailureCounter tracks consecutive transient failures per (auth, model).
+// It is cleared on success, threshold-based cooling, model allow-list changes, or auth removal.
+type transientFailureCounter struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+var transientFailures = &transientFailureCounter{counts: make(map[string]int)}
+
+// increment returns the new count after incrementing; returns 1 when starting fresh.
+func (c *transientFailureCounter) increment(authID, model string) int {
+	key := transientFailureKey(authID, model)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	newCount := c.counts[key] + 1
+	c.counts[key] = newCount
+	return newCount
+}
+
+// reset clears the count for a given (auth, model) pair.
+func (c *transientFailureCounter) reset(authID, model string) {
+	key := transientFailureKey(authID, model)
+	c.mu.Lock()
+	delete(c.counts, key)
+	c.mu.Unlock()
+}
+
+// resetAuth clears all counts for a given auth (all models).
+func (c *transientFailureCounter) resetAuth(authID string) {
+	if authID == "" {
+		return
+	}
+	prefix := authID + "|"
+	c.mu.Lock()
+	for k := range c.counts {
+		if k == authID || strings.HasPrefix(k, prefix) {
+			delete(c.counts, k)
+		}
+	}
+	c.mu.Unlock()
+}
+
+// shouldApplyTransientCoolDown returns true when the number of consecutive transient failures
+// for this auth+model has reached the configured threshold, meaning the model should enter
+// cooldown. On success it also clears the per-auth counter to signal the entry has been seen.
+func shouldApplyTransientCoolDown(authID, model string) bool {
+	count := transientFailures.increment(authID, model)
+	return int64(count) >= transientFailureCoolDownThreshold()
 }
 
 func quotaCooldownDisabledForAuth(auth *Auth) bool {
@@ -721,6 +802,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 		if result.Success {
 			if result.Model != "" {
+				transientFailures.reset(auth.ID, result.Model)
 				state := ensureModelState(auth, result.Model)
 				resetModelState(state, now)
 				updateAggregatedAvailability(auth, now)
@@ -733,6 +815,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				shouldResumeModel = true
 				clearModelQuota = true
 			} else {
+				transientFailures.resetAuth(auth.ID)
 				clearAuthStateOnSuccess(auth, now)
 			}
 		} else {
@@ -829,8 +912,20 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								setModelQuota = true
 							}
 						case 408, 500, 502, 503, 504:
-							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
-							state.Unavailable = !state.NextRetryAfter.IsZero()
+							if statusCode == 408 {
+								state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+								state.Unavailable = !state.NextRetryAfter.IsZero()
+								transientFailures.reset(auth.ID, result.Model)
+							} else if disableCooling {
+								state.NextRetryAfter = time.Time{}
+							} else if !shouldApplyTransientCoolDown(auth.ID, result.Model) {
+								state.NextRetryAfter = time.Time{}
+								state.Unavailable = false
+							} else {
+								transientFailures.reset(auth.ID, result.Model)
+								state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
+								state.Unavailable = !state.NextRetryAfter.IsZero()
+							}
 						default:
 							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
 							state.Unavailable = !state.NextRetryAfter.IsZero()

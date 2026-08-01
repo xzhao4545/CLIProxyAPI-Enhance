@@ -374,6 +374,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
+	auth.SetTransientFailureCoolDownMinFailures(cfg.QuotaExceeded.TransientFailureCoolDownMinFailures)
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
@@ -1968,6 +1969,9 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 	if oldCfg == nil || oldCfg.TransientErrorCooldownSeconds != cfg.TransientErrorCooldownSeconds {
 		auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
+	}
+	if oldCfg == nil || oldCfg.QuotaExceeded.TransientFailureCoolDownMinFailures != cfg.QuotaExceeded.TransientFailureCoolDownMinFailures {
+		auth.SetTransientFailureCoolDownMinFailures(cfg.QuotaExceeded.TransientFailureCoolDownMinFailures)
 	}
 
 	if oldCfg != nil && oldCfg.DisableImageGeneration != cfg.DisableImageGeneration {

@@ -200,6 +200,14 @@ type QuotaExceeded struct {
 	// When all free-tier auths are exhausted (429/503), the conductor retries with
 	// an auth that has available Google One AI credits.
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+
+	// TransientFailureCoolDownMinFailures defines how many consecutive transient failures
+	// (HTTP 500/502/503/504) for the same auth+model must occur before the conductor
+	// marks the model as cooled-down / unavailable. A value below 1 defaults to 1 (immediate
+	// cooling), a value of 3 means the first two transient failures do not block subsequent retries.
+	// Defaults to 3 when unset, matching the operator-facing expectation that providers
+	// should see at most one downstream-facing retry burst before cooling kicks in.
+	TransientFailureCoolDownMinFailures int `yaml:"transient-failure-cool-down-min-failures" json:"transient-failure-cool-down-min-failures"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.
