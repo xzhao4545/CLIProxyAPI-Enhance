@@ -27,22 +27,19 @@ type UsageReporter struct {
 	model        string
 	alias        string
 	authID       string
-	authLabel    string
 	authIndex    string
 	authType     string
 	apiKey       string
 	source       string
 	reasoning    string
 	serviceTier  string
+	generate     bool
 	requestedAt  time.Time
 	ttftMu       sync.RWMutex
 	ttft         time.Duration
 	ttftStart    time.Time
 	ttftSet      bool
 	once         sync.Once
-	stream       bool
-	respModelMu  sync.RWMutex
-	respModel    string
 }
 
 type usageExecutor interface {
@@ -75,10 +72,10 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		authType:    resolveUsageAuthType(auth),
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
+		generate:    usage.GenerateFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
-		reporter.authLabel = strings.TrimSpace(auth.Label)
 		reporter.authIndex = auth.EnsureIndex()
 	}
 	return reporter
@@ -111,37 +108,7 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 	if r == nil {
 		return
 	}
-	translated := thinking.ExtractTranslatedReasoningEffort(payload, format)
-	if translated == "" {
-		return
-	}
-	r.reasoning = translated
-}
-
-// SetStream marks this reporter as serving a streaming (SSE) request.
-func (r *UsageReporter) SetStream(stream bool) {
-	if r == nil {
-		return
-	}
-	r.stream = stream
-}
-
-// SetResponseModel records the model name returned by the upstream provider in its
-// response body or stream chunk. Empty values are ignored so the first non-empty
-// observation wins.
-func (r *UsageReporter) SetResponseModel(model string) {
-	if r == nil {
-		return
-	}
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return
-	}
-	r.respModelMu.Lock()
-	if r.respModel == "" {
-		r.respModel = model
-	}
-	r.respModelMu.Unlock()
+	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
 }
 
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
@@ -202,17 +169,6 @@ func (r *UsageReporter) MarkFirstResponseByte() {
 	r.setTTFT(time.Since(start))
 }
 
-func (r *UsageReporter) ResetTTFT() {
-	if r == nil {
-		return
-	}
-	r.ttftMu.Lock()
-	r.ttft = 0
-	r.ttftStart = time.Time{}
-	r.ttftSet = false
-	r.ttftMu.Unlock()
-}
-
 func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.Detail) (usage.Record, bool) {
 	if r == nil {
 		return usage.Record{}, false
@@ -221,7 +177,7 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 	if model == "" {
 		return usage.Record{}, false
 	}
-	detail = normalizeUsageDetailTotal(detail)
+	detail = normalizeUsageDetailTotal(detail, r.provider, r.executorType)
 	if !hasNonZeroTokenUsage(detail) {
 		return usage.Record{}, false
 	}
@@ -245,20 +201,14 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 	if r == nil {
 		return
 	}
-	detail = normalizeUsageDetailTotal(detail)
+	detail = normalizeUsageDetailTotal(detail, r.provider, r.executorType)
 	r.once.Do(func() {
 		r.publishRecord(ctx, r.buildRecord(detail, failed, fail))
 	})
 }
 
-func normalizeUsageDetailTotal(detail usage.Detail) usage.Detail {
-	if detail.TotalTokens == 0 {
-		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
-		if total > 0 {
-			detail.TotalTokens = total
-		}
-	}
-	return detail
+func normalizeUsageDetailTotal(detail usage.Detail, provider, executorType string) usage.Detail {
+	return usage.EnsureTokenBreakdownForProvider(detail, provider, executorType)
 }
 
 func hasNonZeroTokenUsage(detail usage.Detail) bool {
@@ -268,7 +218,8 @@ func hasNonZeroTokenUsage(detail usage.Detail) bool {
 		detail.CachedTokens != 0 ||
 		detail.CacheReadTokens != 0 ||
 		detail.CacheCreationTokens != 0 ||
-		detail.TotalTokens != 0
+		detail.TotalTokens != 0 ||
+		detail.TokenBreakdown.TotalTokens != 0
 }
 
 // ensurePublished guarantees that a usage record is emitted exactly once.
@@ -295,38 +246,35 @@ func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures .
 		fail = failures[0]
 	}
 	if r == nil {
-		return usage.Record{Detail: detail, Failed: failed, Fail: fail}
+		return usage.Record{Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
 	return r.buildRecordForModel(r.model, detail, failed, fail)
 }
 
 func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, failed bool, fail usage.Failure) usage.Record {
 	if r == nil {
-		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail}
+		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
 	return usage.Record{
 		Provider:            r.provider,
-		ProviderLabel:       r.authLabel,
 		ExecutorType:        r.executorType,
 		Model:               model,
 		Alias:               r.alias,
 		Source:              r.source,
 		APIKey:              r.apiKey,
 		AuthID:              r.authID,
-		AuthLabel:           r.authLabel,
 		AuthIndex:           r.authIndex,
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
+		Generate:            usage.GenerateFlag(r.generate),
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),
 		Failed:              failed,
 		Fail:                fail,
 		Detail:              detail,
-		Stream:              r.stream,
-		ResponseModel:       r.responseModel(),
 	}
 }
 
@@ -336,8 +284,7 @@ func failFromErrors(errs ...error) usage.Failure {
 			continue
 		}
 		fail := usage.Failure{
-			Stage: "upstream_request",
-			Body:  strings.TrimSpace(err.Error()),
+			Body: strings.TrimSpace(err.Error()),
 		}
 		var se interface{ StatusCode() int }
 		if errors.As(err, &se) && se != nil {
@@ -384,15 +331,6 @@ func (r *UsageReporter) ttftDuration() time.Duration {
 	r.ttftMu.RLock()
 	defer r.ttftMu.RUnlock()
 	return r.ttft
-}
-
-func (r *UsageReporter) responseModel() string {
-	if r == nil {
-		return ""
-	}
-	r.respModelMu.RLock()
-	defer r.respModelMu.RUnlock()
-	return r.respModel
 }
 
 type usageTTFTRoundTripper struct {
@@ -613,11 +551,14 @@ func hasOpenAIStyleUsageTokenFields(usageNode gjson.Result) bool {
 	if !usageNode.Exists() || !usageNode.IsObject() {
 		return false
 	}
+	return usageNode.Get("total_tokens").Exists() || hasOpenAIStyleUsageBucketFields(usageNode)
+}
+
+func hasOpenAIStyleUsageBucketFields(usageNode gjson.Result) bool {
 	return usageNode.Get("prompt_tokens").Exists() ||
 		usageNode.Get("input_tokens").Exists() ||
 		usageNode.Get("completion_tokens").Exists() ||
 		usageNode.Get("output_tokens").Exists() ||
-		usageNode.Get("total_tokens").Exists() ||
 		usageNode.Get("prompt_tokens_details.cached_tokens").Exists() ||
 		usageNode.Get("input_tokens_details.cached_tokens").Exists() ||
 		usageNode.Get("prompt_tokens_details.cache_write_tokens").Exists() ||
@@ -666,6 +607,42 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	}
 	if reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
+	}
+	if hasOpenAIStyleUsageBucketFields(usageNode) {
+		if inputNode.Exists() && outputNode.Exists() {
+			detail.TokenBreakdown = usage.NewSubsetTokenBreakdown(
+				detail.InputTokens,
+				detail.CacheReadTokens,
+				detail.CacheCreationTokens,
+				detail.OutputTokens,
+				detail.ReasoningTokens,
+				detail.TotalTokens,
+			)
+		} else {
+			cacheReadTokens := detail.CacheReadTokens
+			cacheCreationTokens := detail.CacheCreationTokens
+			if !inputNode.Exists() {
+				cacheReadTokens = 0
+				cacheCreationTokens = 0
+			}
+			reasoningTokens := detail.ReasoningTokens
+			if !outputNode.Exists() {
+				reasoningTokens = 0
+			}
+			detail.TokenBreakdown = usage.NewPartialSubsetTokenBreakdown(
+				detail.InputTokens,
+				cacheReadTokens,
+				cacheCreationTokens,
+				detail.OutputTokens,
+				reasoningTokens,
+				detail.TotalTokens,
+			)
+		}
+	} else {
+		detail.TokenBreakdown = usage.NewUnclassifiedTokenBreakdown(detail.TotalTokens)
+	}
+	if detail.TotalTokens == 0 {
+		detail.TotalTokens = detail.TokenBreakdown.TotalTokens
 	}
 	return detail
 }
@@ -722,29 +699,62 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		detail.CachedTokens = detail.CacheCreationTokens
 	}
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheReadTokens + detail.CacheCreationTokens
+	detail.TokenBreakdown = usage.NewIndependentTokenBreakdown(
+		detail.InputTokens,
+		detail.CacheReadTokens,
+		detail.CacheCreationTokens,
+		detail.OutputTokens,
+		detail.ReasoningTokens,
+		detail.TotalTokens,
+	)
 	return detail
 }
 
 func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 	cachedTokens := node.Get("cachedContentTokenCount").Int()
+	toolUseTokens := firstExistingUsageNode(node, "toolUsePromptTokenCount", "tool_use_prompt_token_count").Int()
+	inputTokens, okInput := safeUsageTokenSum(node.Get("promptTokenCount").Int(), toolUseTokens)
 	detail := usage.Detail{
-		InputTokens:     node.Get("promptTokenCount").Int(),
+		InputTokens:     inputTokens,
 		OutputTokens:    node.Get("candidatesTokenCount").Int(),
 		ReasoningTokens: node.Get("thoughtsTokenCount").Int(),
 		TotalTokens:     node.Get("totalTokenCount").Int(),
 		CachedTokens:    cachedTokens,
 		CacheReadTokens: cachedTokens,
 	}
-	if detail.TotalTokens == 0 {
-		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
+	if !okInput {
+		detail.TokenBreakdown = invalidUsageTokenBreakdown(detail.TotalTokens)
+		return detail
 	}
+	if detail.TotalTokens == 0 {
+		var okTotal bool
+		detail.TotalTokens, okTotal = safeUsageTokenSum(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens)
+		if !okTotal {
+			detail.TotalTokens = 0
+			detail.TokenBreakdown = invalidUsageTokenBreakdown(0)
+			return detail
+		}
+	}
+	detail.TokenBreakdown = usage.NewSeparateReasoningTokenBreakdown(
+		detail.InputTokens,
+		detail.CacheReadTokens,
+		detail.CacheCreationTokens,
+		detail.OutputTokens,
+		detail.ReasoningTokens,
+		detail.TotalTokens,
+	)
 	return detail
 }
 
 func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 	cacheRead := firstExistingUsageNode(node, "cache_read_tokens", "cacheReadTokens")
+	toolUseTokens := firstExistingUsageNode(node, "tool_use_tokens", "total_tool_use_tokens", "toolUseTokens", "totalToolUseTokens").Int()
+	inputTokens, okInput := safeUsageTokenSum(
+		firstExistingUsageNode(node, "input_tokens", "prompt_tokens", "total_input_tokens").Int(),
+		toolUseTokens,
+	)
 	detail := usage.Detail{
-		InputTokens:         firstExistingUsageNode(node, "input_tokens", "prompt_tokens", "total_input_tokens").Int(),
+		InputTokens:         inputTokens,
 		OutputTokens:        firstExistingUsageNode(node, "output_tokens", "completion_tokens", "total_output_tokens").Int(),
 		ReasoningTokens:     firstExistingUsageNode(node, "reasoning_tokens", "thoughtsTokenCount", "total_thought_tokens").Int(),
 		TotalTokens:         firstExistingUsageNode(node, "total_tokens", "totalTokenCount").Int(),
@@ -752,15 +762,30 @@ func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 		CacheReadTokens:     cacheRead.Int(),
 		CacheCreationTokens: firstExistingUsageNode(node, "cache_creation_tokens", "cacheCreationTokens", "cache_write_tokens", "cacheWriteTokens").Int(),
 	}
+	if !okInput {
+		detail.TokenBreakdown = invalidUsageTokenBreakdown(detail.TotalTokens)
+		return detail
+	}
 	if !cacheRead.Exists() && detail.CachedTokens > 0 {
 		detail.CacheReadTokens = detail.CachedTokens
 	}
 	if detail.TotalTokens == 0 {
-		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CacheCreationTokens
-		if cacheRead.Exists() {
-			detail.TotalTokens += detail.CacheReadTokens
+		var okTotal bool
+		detail.TotalTokens, okTotal = safeUsageTokenSum(detail.InputTokens, detail.OutputTokens, detail.ReasoningTokens)
+		if !okTotal {
+			detail.TotalTokens = 0
+			detail.TokenBreakdown = invalidUsageTokenBreakdown(0)
+			return detail
 		}
 	}
+	detail.TokenBreakdown = usage.NewSeparateReasoningTokenBreakdown(
+		detail.InputTokens,
+		detail.CacheReadTokens,
+		detail.CacheCreationTokens,
+		detail.OutputTokens,
+		detail.ReasoningTokens,
+		detail.TotalTokens,
+	)
 	return detail
 }
 
@@ -850,6 +875,29 @@ func firstExistingUsageNode(root gjson.Result, paths ...string) gjson.Result {
 		}
 	}
 	return gjson.Result{}
+}
+
+func safeUsageTokenSum(values ...int64) (int64, bool) {
+	var total int64
+	for _, value := range values {
+		if value < 0 || total > int64(^uint64(0)>>1)-value {
+			return 0, false
+		}
+		total += value
+	}
+	return total, true
+}
+
+func invalidUsageTokenBreakdown(total int64) usage.TokenBreakdown {
+	if total < 0 {
+		total = 0
+	}
+	return usage.TokenBreakdown{
+		SchemaVersion:      usage.TokenAccountingSchemaVersion,
+		Quality:            usage.TokenAccountingQualityInconsistent,
+		TotalTokens:        total,
+		UnclassifiedTokens: total,
+	}
 }
 
 func ParseAntigravityUsage(data []byte) usage.Detail {
@@ -1038,62 +1086,6 @@ func isStopChunkWithoutUsage(jsonBytes []byte) bool {
 
 func JSONPayload(line []byte) []byte {
 	return jsonPayload(line)
-}
-
-// ExtractOpenAIResponseModel returns the model field from an OpenAI ChatCompletion
-// or Responses non-stream response body. Returns empty when absent.
-func ExtractOpenAIResponseModel(data []byte) string {
-	if len(data) == 0 || !gjson.ValidBytes(data) {
-		return ""
-	}
-	if model := strings.TrimSpace(gjson.GetBytes(data, "model").String()); model != "" {
-		return model
-	}
-	return strings.TrimSpace(gjson.GetBytes(data, "response.model").String())
-}
-
-// ExtractOpenAIStreamResponseModel returns the model field from an OpenAI
-// ChatCompletion or Responses SSE data line. Returns empty when the line has no
-// model field.
-func ExtractOpenAIStreamResponseModel(line []byte) string {
-	payload := jsonPayload(line)
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return ""
-	}
-	if model := strings.TrimSpace(gjson.GetBytes(payload, "model").String()); model != "" {
-		return model
-	}
-	return strings.TrimSpace(gjson.GetBytes(payload, "response.model").String())
-}
-
-// ExtractCodexResponseModel returns the model from a Codex response.completed SSE
-// event payload or a non-stream Codex response body.
-func ExtractCodexResponseModel(data []byte) string {
-	if len(data) == 0 || !gjson.ValidBytes(data) {
-		return ""
-	}
-	return strings.TrimSpace(gjson.GetBytes(data, "response.model").String())
-}
-
-// ExtractClaudeResponseModel returns the model from a Claude non-stream message body.
-func ExtractClaudeResponseModel(data []byte) string {
-	if len(data) == 0 || !gjson.ValidBytes(data) {
-		return ""
-	}
-	return strings.TrimSpace(gjson.GetBytes(data, "model").String())
-}
-
-// ExtractClaudeStreamResponseModel returns the model from a Claude message_start SSE
-// data line. Returns empty for other event types or when the model is absent.
-func ExtractClaudeStreamResponseModel(line []byte) string {
-	payload := jsonPayload(line)
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return ""
-	}
-	if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(payload, "type").String()), "message_start") {
-		return ""
-	}
-	return strings.TrimSpace(gjson.GetBytes(payload, "message.model").String())
 }
 
 func jsonPayload(line []byte) []byte {

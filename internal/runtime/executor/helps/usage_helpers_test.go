@@ -12,16 +12,16 @@ import (
 )
 
 func TestParseOpenAIUsageChatCompletions(t *testing.T) {
-	data := []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)
+	data := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)
 	detail := ParseOpenAIUsage(data)
-	if detail.InputTokens != 1 {
-		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 1)
+	if detail.InputTokens != 10 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 10)
 	}
-	if detail.OutputTokens != 2 {
-		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 2)
+	if detail.OutputTokens != 6 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 6)
 	}
-	if detail.TotalTokens != 3 {
-		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 3)
+	if detail.TotalTokens != 16 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 16)
 	}
 	if detail.CachedTokens != 4 {
 		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 4)
@@ -31,6 +31,12 @@ func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	}
 	if detail.ReasoningTokens != 5 {
 		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 5)
+	}
+	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityComplete {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+	if detail.TokenBreakdown.Input.UncachedTokens != 6 || detail.TokenBreakdown.Output.NonReasoningTokens != 1 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
 	}
 }
 
@@ -57,6 +63,32 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 	}
 	if detail.ResponseServiceTier != "default" {
 		t.Fatalf("response service tier = %q, want default", detail.ResponseServiceTier)
+	}
+	if detail.TokenBreakdown.Input.UncachedTokens != 3 || detail.TokenBreakdown.Output.NonReasoningTokens != 11 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+}
+
+func TestParseOpenAIUsageTotalOnlyIsUnclassified(t *testing.T) {
+	detail := ParseOpenAIUsage([]byte(`{"usage":{"total_tokens":42}}`))
+	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityUnclassified ||
+		detail.TotalTokens != 42 || detail.TokenBreakdown.UnclassifiedTokens != 42 {
+		t.Fatalf("detail = %+v", detail)
+	}
+}
+
+func TestParseOpenAIUsagePartialBucketsPreserveKnownTokens(t *testing.T) {
+	detail := ParseOpenAIUsage([]byte(`{"usage":{"input_tokens":10,"total_tokens":15}}`))
+	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityUnclassified ||
+		detail.TokenBreakdown.Input.TotalTokens != 10 || detail.TokenBreakdown.UnclassifiedTokens != 5 {
+		t.Fatalf("detail = %+v", detail)
+	}
+}
+
+func TestParseOpenAIUsageExplicitZeroBucketsRemainInconsistent(t *testing.T) {
+	detail := ParseOpenAIUsage([]byte(`{"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":42}}`))
+	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityInconsistent {
+		t.Fatalf("detail = %+v", detail)
 	}
 }
 
@@ -86,6 +118,9 @@ func TestParseCodexUsageIncludesCacheWriteTokens(t *testing.T) {
 	}
 	if detail.ResponseServiceTier != "priority" {
 		t.Fatalf("response service tier = %q, want priority", detail.ResponseServiceTier)
+	}
+	if detail.TokenBreakdown.Input.UncachedTokens != 30 || detail.TokenBreakdown.Input.CacheWriteTokens != 40 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
 	}
 }
 
@@ -283,6 +318,9 @@ func TestParseClaudeUsageIncludesCacheTokensInTotal(t *testing.T) {
 	if detail.TotalTokens != 22859 {
 		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22859)
 	}
+	if detail.TokenBreakdown.Input.TotalTokens != 22606 || detail.TokenBreakdown.Input.UncachedTokens != 3085 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
 }
 
 func TestParseClaudeUsageFallsBackCachedTokensToCacheCreation(t *testing.T) {
@@ -303,6 +341,36 @@ func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
 	}
 	if detail.CacheReadTokens != 4 {
 		t.Fatalf("cache read tokens = %d, want 4", detail.CacheReadTokens)
+	}
+	if detail.TokenBreakdown.Input.UncachedTokens != 6 || detail.TokenBreakdown.TotalTokens != 12 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+}
+
+func TestParseGeminiUsageIncludesToolUsePromptTokens(t *testing.T) {
+	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"thoughtsTokenCount":3,"toolUsePromptTokenCount":5,"totalTokenCount":20}}`))
+	if detail.InputTokens != 15 || detail.TotalTokens != 20 {
+		t.Fatalf("detail = %+v", detail)
+	}
+	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityComplete ||
+		detail.TokenBreakdown.Input.UncachedTokens != 15 || detail.TokenBreakdown.Output.ReasoningTokens != 3 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+}
+
+func TestParseGeminiUsageRejectsInvalidToolUseSums(t *testing.T) {
+	tests := map[string]string{
+		"negative": `{"usageMetadata":{"promptTokenCount":10,"toolUsePromptTokenCount":-1,"totalTokenCount":10}}`,
+		"overflow": `{"usageMetadata":{"promptTokenCount":9223372036854775807,"toolUsePromptTokenCount":1,"totalTokenCount":9223372036854775807}}`,
+	}
+	for name, payload := range tests {
+		t.Run(name, func(t *testing.T) {
+			detail := ParseGeminiUsage([]byte(payload))
+			if detail.InputTokens < 0 || !detail.TokenBreakdown.Valid() ||
+				detail.TokenBreakdown.Quality != usage.TokenAccountingQualityInconsistent {
+				t.Fatalf("detail = %+v", detail)
+			}
+		})
 	}
 }
 
@@ -326,12 +394,40 @@ func TestParseInteractionsUsage(t *testing.T) {
 	if detail.CacheReadTokens != 2 {
 		t.Fatalf("cache read tokens = %d, want 2", detail.CacheReadTokens)
 	}
+	if detail.TokenBreakdown.Input.UncachedTokens != 1 || detail.TokenBreakdown.Output.TotalTokens != 9 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+}
+
+func TestNormalizeUsageDetailTotalDoesNotDoubleCountReasoning(t *testing.T) {
+	detail := normalizeUsageDetailTotal(usage.Detail{
+		InputTokens:     100,
+		OutputTokens:    30,
+		ReasoningTokens: 12,
+	}, "openai", "")
+	if detail.TotalTokens != 130 {
+		t.Fatalf("total tokens = %d, want 130", detail.TotalTokens)
+	}
+	if detail.TokenBreakdown.Quality != usage.TokenAccountingQualityComplete || detail.TokenBreakdown.Output.ReasoningTokens != 12 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
 }
 
 func TestParseInteractionsUsageNormalizesCacheWriteAlias(t *testing.T) {
 	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"cache_write_tokens":2}}`))
 	if detail.CacheCreationTokens != 2 {
 		t.Fatalf("cache creation tokens = %d, want 2", detail.CacheCreationTokens)
+	}
+}
+
+func TestParseInteractionsUsageIncludesToolUseTokens(t *testing.T) {
+	detail := ParseInteractionsUsage([]byte(`{"usage":{"total_input_tokens":2,"total_output_tokens":6,"total_thought_tokens":3,"total_tool_use_tokens":4,"total_tokens":15}}`))
+	if detail.InputTokens != 6 || detail.OutputTokens != 6 || detail.ReasoningTokens != 3 || detail.TotalTokens != 15 {
+		t.Fatalf("detail = %+v", detail)
+	}
+	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityComplete ||
+		detail.TokenBreakdown.Input.UncachedTokens != 6 || detail.TokenBreakdown.Output.TotalTokens != 9 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
 	}
 }
 
@@ -456,28 +552,6 @@ func TestUsageReporterBuildRecordIncludesReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestUsageReporterSetTranslatedReasoningEffortPreservesContextValue(t *testing.T) {
-	ctx := usage.WithReasoningEffort(context.Background(), "max")
-	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
-	reporter.SetTranslatedReasoningEffort([]byte(`{"model":"gpt-5.4"}`), "openai")
-
-	record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
-	if record.ReasoningEffort != "max" {
-		t.Fatalf("reasoning effort = %q, want %q (context value should be preserved when translated extraction is empty)", record.ReasoningEffort, "max")
-	}
-}
-
-func TestUsageReporterSetTranslatedReasoningEffortOverridesWhenNonEmpty(t *testing.T) {
-	ctx := usage.WithReasoningEffort(context.Background(), "low")
-	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
-	reporter.SetTranslatedReasoningEffort([]byte(`{"reasoning_effort":"high"}`), "openai")
-
-	record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
-	if record.ReasoningEffort != "high" {
-		t.Fatalf("reasoning effort = %q, want %q (translated value should override context)", record.ReasoningEffort, "high")
-	}
-}
-
 func TestUsageReporterBuildRecordIncludesServiceTier(t *testing.T) {
 	ctx := usage.WithServiceTier(context.Background(), "auto")
 	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
@@ -488,6 +562,25 @@ func TestUsageReporterBuildRecordIncludesServiceTier(t *testing.T) {
 	}
 	if record.ResponseServiceTier != "default" {
 		t.Fatalf("response service tier = %q, want default", record.ResponseServiceTier)
+	}
+}
+
+func TestUsageReporterBuildRecordDefaultsGenerateTrue(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if !usage.GenerateEnabled(record.Generate) {
+		t.Fatalf("generate = %v, want true", usage.GenerateEnabled(record.Generate))
+	}
+}
+
+func TestUsageReporterBuildRecordIncludesGenerateFalse(t *testing.T) {
+	ctx := usage.WithGenerate(context.Background(), false)
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if usage.GenerateEnabled(record.Generate) {
+		t.Fatalf("generate = %v, want false", usage.GenerateEnabled(record.Generate))
 	}
 }
 
@@ -518,96 +611,6 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	}
 	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CachedTokens: 2}); !ok {
 		t.Fatalf("expected non-zero cached token usage to be recorded")
-	}
-}
-
-func TestUsageReporterSetStreamAndResponseModel(t *testing.T) {
-	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
-	reporter.SetStream(true)
-	reporter.SetResponseModel("gpt-5.4-real")
-
-	record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
-	if !record.Stream {
-		t.Fatalf("stream = false, want true")
-	}
-	if record.ResponseModel != "gpt-5.4-real" {
-		t.Fatalf("response model = %q, want %q", record.ResponseModel, "gpt-5.4-real")
-	}
-}
-
-func TestUsageReporterSetResponseModelFirstNonEmptyWins(t *testing.T) {
-	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
-	reporter.SetResponseModel("first-model")
-	reporter.SetResponseModel("second-model")
-
-	if got := reporter.responseModel(); got != "first-model" {
-		t.Fatalf("response model = %q, want %q", got, "first-model")
-	}
-}
-
-func TestUsageReporterSetResponseModelIgnoresEmpty(t *testing.T) {
-	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
-	reporter.SetResponseModel("")
-
-	if got := reporter.responseModel(); got != "" {
-		t.Fatalf("response model = %q, want empty", got)
-	}
-}
-
-func TestExtractOpenAIResponseModel(t *testing.T) {
-	if got := ExtractOpenAIResponseModel([]byte(`{"model":"gpt-5.4","choices":[]}`)); got != "gpt-5.4" {
-		t.Fatalf("got %q, want gpt-5.4", got)
-	}
-	if got := ExtractOpenAIResponseModel([]byte(`{"response":{"model":"gpt-5.5"}}`)); got != "gpt-5.5" {
-		t.Fatalf("got %q, want gpt-5.5", got)
-	}
-	if got := ExtractOpenAIResponseModel([]byte(`{"choices":[]}`)); got != "" {
-		t.Fatalf("got %q, want empty", got)
-	}
-}
-
-func TestExtractOpenAIStreamResponseModel(t *testing.T) {
-	line := []byte(`data: {"id":"chunk_1","model":"gpt-5.4","choices":[]}`)
-	if got := ExtractOpenAIStreamResponseModel(line); got != "gpt-5.4" {
-		t.Fatalf("got %q, want gpt-5.4", got)
-	}
-	lineResponse := []byte(`data: {"type":"response.completed","response":{"model":"gpt-5.5"}}`)
-	if got := ExtractOpenAIStreamResponseModel(lineResponse); got != "gpt-5.5" {
-		t.Fatalf("got %q, want gpt-5.5", got)
-	}
-	if got := ExtractOpenAIStreamResponseModel([]byte(`data: {"choices":[]}`)); got != "" {
-		t.Fatalf("got %q, want empty", got)
-	}
-}
-
-func TestExtractCodexResponseModel(t *testing.T) {
-	data := []byte(`{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5-codex","usage":{"input_tokens":1}}}`)
-	if got := ExtractCodexResponseModel(data); got != "gpt-5-codex" {
-		t.Fatalf("got %q, want gpt-5-codex", got)
-	}
-	if got := ExtractCodexResponseModel([]byte(`{"type":"response.created"}`)); got != "" {
-		t.Fatalf("got %q, want empty", got)
-	}
-}
-
-func TestExtractClaudeResponseModel(t *testing.T) {
-	data := []byte(`{"id":"msg_1","type":"message","model":"claude-sonnet-4-5","role":"assistant"}`)
-	if got := ExtractClaudeResponseModel(data); got != "claude-sonnet-4-5" {
-		t.Fatalf("got %q, want claude-sonnet-4-5", got)
-	}
-	if got := ExtractClaudeResponseModel([]byte(`{"id":"msg_1","type":"message"}`)); got != "" {
-		t.Fatalf("got %q, want empty", got)
-	}
-}
-
-func TestExtractClaudeStreamResponseModel(t *testing.T) {
-	line := []byte(`data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-5"}}`)
-	if got := ExtractClaudeStreamResponseModel(line); got != "claude-sonnet-4-5" {
-		t.Fatalf("got %q, want claude-sonnet-4-5", got)
-	}
-	nonStart := []byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`)
-	if got := ExtractClaudeStreamResponseModel(nonStart); got != "" {
-		t.Fatalf("got %q, want empty for non-message_start", got)
 	}
 }
 

@@ -31,6 +31,7 @@ import (
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	forkusage "github.com/router-for-me/CLIProxyAPI/v7/internal/fork/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
@@ -108,6 +109,7 @@ func effectiveSDKConfig(cfg *config.Config) *config.SDKConfig {
 		return nil
 	}
 	sdkCfg := cfg.SDKConfig
+	sdkCfg.CodexOptimizeMultiAgentV2 = cfg.Codex.OptimizeMultiAgentV2
 	if cfg.CommercialMode {
 		sdkCfg.RequestLog = false
 	}
@@ -219,7 +221,8 @@ type Server struct {
 	muxHTTPListener *muxListener
 
 	// handlers contains the API handlers for processing requests.
-	handlers *handlers.BaseAPIHandler
+	handlers         *handlers.BaseAPIHandler
+	codexLiveHandler *codexlive.Handler
 
 	// cfg holds the current server configuration.
 	cfg *config.Config
@@ -308,6 +311,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
+	engine.Use(logging.CPATraceIDMiddleware())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -1449,8 +1453,12 @@ func formatHomeClaudeModel(entry homeModelEntry) map[string]any {
 	if maxOutput <= 0 {
 		maxOutput = registry.DefaultClaudeMaxOutputTokens
 	}
+	modelID := entry.id
+	if strings.HasPrefix(modelID, "claude-") {
+		modelID = util.EnsureClaudeModelIDPrefix(modelID)
+	}
 	model := map[string]any{
-		"id":               util.EnsureClaudeModelIDPrefix(entry.id),
+		"id":               modelID,
 		"object":           "model",
 		"owned_by":         entry.ownedBy,
 		"type":             "model",
@@ -1860,8 +1868,12 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	// Shutdown the HTTP server.
-	if err := s.server.Shutdown(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
+	errShutdown := s.server.Shutdown(ctx)
+	if s.codexLiveHandler != nil {
+		s.codexLiveHandler.Close()
+	}
+	if errShutdown != nil {
+		return fmt.Errorf("failed to shutdown HTTP server: %v", errShutdown)
 	}
 
 	log.Debug("API server stopped")
