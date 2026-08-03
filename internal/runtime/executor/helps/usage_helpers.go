@@ -22,25 +22,27 @@ import (
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authLabel    string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	generate     bool
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider      string
+	executorType  string
+	model         string
+	alias         string
+	authID        string
+	authLabel     string
+	authIndex     string
+	authType      string
+	apiKey        string
+	source        string
+	reasoning     string
+	serviceTier   string
+	generate      bool
+	stream        bool
+	responseModel string
+	requestedAt   time.Time
+	ttftMu        sync.RWMutex
+	ttft          time.Duration
+	ttftStart     time.Time
+	ttftSet       bool
+	once          sync.Once
 }
 
 type usageExecutor interface {
@@ -94,8 +96,42 @@ func ExecutorTypeName(executor any) string {
 	return strings.TrimSpace(executorType.Name())
 }
 
+func (r *UsageReporter) SetStream(stream bool) {
+	if r == nil {
+		return
+	}
+	r.stream = stream
+}
+
+// PublishFromPayload extracts the response's model name (when present) before
+// delegating to Publish. Callers that already hold the response payload should
+// use this variant so response_model is recorded without re-parsing.
+func (r *UsageReporter) PublishFromPayload(ctx context.Context, payload []byte, detail usage.Detail) {
+	if r == nil {
+		return
+	}
+	model := canonicalResponseModel(payload)
+	if model != "" {
+		r.responseModel = model
+	}
+	r.Publish(ctx, detail)
+}
+
 func (r *UsageReporter) Publish(ctx context.Context, detail usage.Detail) {
 	r.publishWithOutcome(ctx, detail, false, usage.Failure{})
+}
+
+// canonicalResponseModel extracts the top-level `model` (or `response.model`)
+// field from an upstream response payload, when present. Returns "" otherwise.
+func canonicalResponseModel(payload []byte) string {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	if model == "" {
+		model = strings.TrimSpace(gjson.GetBytes(payload, "response.model").String())
+	}
+	return model
 }
 
 func (r *UsageReporter) PublishAdditionalModel(ctx context.Context, model string, detail usage.Detail) {
@@ -273,6 +309,8 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ServiceTier:         r.serviceTier,
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
 		Generate:            usage.GenerateFlag(r.generate),
+		Stream:              r.stream,
+		ResponseModel:       r.responseModel,
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),

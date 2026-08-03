@@ -248,6 +248,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	apiKey := geminiAPIKey(auth)
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 
 	from := opts.SourceFormat
@@ -461,6 +462,7 @@ func (e *GeminiExecutor) executeInteractionsStream(ctx context.Context, auth *cl
 	targetName := thinking.ParseSuffix(req.Model).ModelName
 	apiKey := geminiAPIKey(auth)
 	reporter := helps.NewExecutorUsageReporter(ctx, e, targetName, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 
 	body := translateGeminiInteractionsRequestBody(ctx, e.cfg, targetName, req.Payload, opts, true)

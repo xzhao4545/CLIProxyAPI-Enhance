@@ -33,6 +33,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 

@@ -34,6 +34,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 
 	from := opts.SourceFormat

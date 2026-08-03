@@ -31,6 +31,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)

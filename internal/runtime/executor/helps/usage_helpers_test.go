@@ -584,6 +584,59 @@ func TestUsageReporterBuildRecordIncludesGenerateFalse(t *testing.T) {
 	}
 }
 
+func TestUsageReporterBuildRecordIncludesStreamFlag(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	reporter.SetStream(true)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if !record.Stream {
+		t.Fatalf("stream = false, want true")
+	}
+}
+
+func TestUsageReporterBuildRecordIncludesResponseModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	reporter.responseModel = "gpt-5.4-turbo"
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.ResponseModel != "gpt-5.4-turbo" {
+		t.Fatalf("response model = %q, want gpt-5.4-turbo", record.ResponseModel)
+	}
+}
+
+func TestUsageReporterPublishFromPayloadSetsResponseModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	reporter.SetStream(true)
+
+	payload := []byte(`{"id":"chatcmpl-1","model":"gpt-5.4-turbo","usage":{"total_tokens":10}}`)
+	reporter.PublishFromPayload(context.Background(), payload, usage.Detail{TotalTokens: 10})
+
+	if reporter.responseModel != "gpt-5.4-turbo" {
+		t.Fatalf("response model = %q, want gpt-5.4-turbo", reporter.responseModel)
+	}
+}
+
+func TestUsageReporterPublishFromPayloadNestedResponseModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+
+	payload := []byte(`{"response":{"model":"gpt-5.4-turbo","usage":{"total_tokens":5}}}`)
+	reporter.PublishFromPayload(context.Background(), payload, usage.Detail{TotalTokens: 5})
+
+	if reporter.responseModel != "gpt-5.4-turbo" {
+		t.Fatalf("response model = %q, want gpt-5.4-turbo", reporter.responseModel)
+	}
+}
+
+func TestUsageReporterPublishFromPayloadIgnoresInvalidJSON(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+
+	reporter.PublishFromPayload(context.Background(), []byte("not json"), usage.Detail{})
+
+	if reporter.responseModel != "" {
+		t.Fatalf("response model = %q, want empty", reporter.responseModel)
+	}
+}
+
 func TestUsageReporterSetTranslatedReasoningEffortPreservesClientServiceTier(t *testing.T) {
 	ctx := usage.WithServiceTier(context.Background(), "auto")
 	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)

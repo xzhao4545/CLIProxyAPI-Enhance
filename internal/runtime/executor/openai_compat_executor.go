@@ -296,6 +296,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 
 	baseURL, apiKey := e.resolveCredentials(auth)
@@ -464,6 +465,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	reporter.SetStream(true)
 	defer reporter.TrackFailure(ctx, &err)
 
 	baseURL, apiKey := e.resolveCredentials(auth)
