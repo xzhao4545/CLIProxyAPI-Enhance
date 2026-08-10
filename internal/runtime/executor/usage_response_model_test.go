@@ -121,6 +121,36 @@ func TestCodexExecutorRecordsTerminalResponseModelAcrossReadBoundaries(t *testin
 	}
 }
 
+func TestCodexExecutorKeepsResponseModelFromCreatedEvent(t *testing.T) {
+	created := `data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4-actual","status":"in_progress"}}` + "\n\n"
+	completed := `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", responseModelRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			Body:       io.NopCloser(io.MultiReader(strings.NewReader(created), strings.NewReader(completed))),
+			Request:    req,
+		}, nil
+	}))
+
+	plugin := &captureResponseModelUsagePlugin{provider: "codex", model: "gpt-5.4", records: make(chan usage.Record, 1)}
+	usage.RegisterPlugin(plugin)
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "http://codex.test", "api_key": "test"}}
+	_, err := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","input":"hi"}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	record := waitForResponseModelUsageRecord(t, plugin.records)
+	if record.ResponseModel != "gpt-5.4-actual" {
+		t.Fatalf("response model = %q, want gpt-5.4-actual", record.ResponseModel)
+	}
+}
+
 func TestClaudeExecutorRecordsResponseModelAfterGzipDecompression(t *testing.T) {
 	var compressed bytes.Buffer
 	gzipWriter := gzip.NewWriter(&compressed)

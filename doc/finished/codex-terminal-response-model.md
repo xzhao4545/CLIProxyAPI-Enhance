@@ -10,6 +10,8 @@ split across network reads.
 
 - Publish usage from complete Codex terminal payloads through the shared
   response-aware reporter API.
+- Inspect response models only in `response.created`, `response.completed`, and
+  `response.incomplete` lifecycle events, skipping high-frequency delta events.
 - Cover regular responses, streaming responses, and image response paths.
 - Keep `response_model` empty when an upstream response does not include a
   model instead of falling back to the dispatched request model.

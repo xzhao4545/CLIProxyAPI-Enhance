@@ -77,7 +77,9 @@ resolved model sent to the provider, while `response_model` is extracted from
 the provider response. The shared HTTP response-body observer captures models
 for regular JSON and SSE traffic. Claude observes its manually decoded response
 body, while Codex HTTP, SSE, and WebSocket executors observe their complete
-terminal response payloads explicitly.
+response lifecycle payloads explicitly. Codex HTTP and SSE paths inspect only
+`response.created`, `response.completed`, and `response.incomplete` events so
+high-frequency delta events do not add response-model parsing overhead.
 Stream requests retain the first non-empty model until the terminal usage
 record is published. Supported response locations are `model`,
 `response.model`, and Claude's stream-specific `message.model`.

@@ -138,7 +138,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		eventData := bytes.TrimSpace(line[5:])
 		eventData = helps.RestoreCodexMultiAgentV2Response(eventData, optimizeMultiAgentV2)
 		eventType := gjson.GetBytes(eventData, "type").String()
-		reporter.ObserveResponseModel(eventData)
+		if eventType == "response.created" || eventType == "response.completed" || eventType == "response.incomplete" {
+			reporter.ObserveResponseModel(eventData)
+		}
 
 		if streamErr, terminalBody, ok := codexTerminalFailureErr(eventData); ok {
 			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
