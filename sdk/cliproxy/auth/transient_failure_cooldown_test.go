@@ -10,7 +10,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-// TestTransientFailureCoolDownThreshold verifies that 5xx transient failures
+// TestTransientFailureCoolDownThreshold verifies that retryable transient failures
 // only trigger cooldown once the configured repeat count is reached.
 
 // testMemoryStore is a minimal in-memory Store for cooldown tests.
@@ -59,14 +59,18 @@ func TestTransientFailureCoolDownThreshold(t *testing.T) {
 		transientFailures.reset(authID, model)
 	}
 
-	fail503 := func(m *Manager, authID, model string) {
+	fail := func(m *Manager, authID, model string, resultErr *Error, retryAfter *time.Duration) {
 		m.MarkResult(ctx, Result{
-			AuthID:   authID,
-			Provider: "mock",
-			Model:    model,
-			Success:  false,
-			Error:    &Error{Code: "server_error", HTTPStatus: http.StatusServiceUnavailable, Message: "upstream 503"},
+			AuthID:     authID,
+			Provider:   "mock",
+			Model:      model,
+			Success:    false,
+			Error:      resultErr,
+			RetryAfter: retryAfter,
 		})
+	}
+	fail503 := func(m *Manager, authID, model string) {
+		fail(m, authID, model, &Error{Code: "server_error", HTTPStatus: http.StatusServiceUnavailable, Message: "upstream 503"}, nil)
 	}
 
 	blocked := func(m *Manager, authID, model string) bool {
@@ -74,29 +78,104 @@ func TestTransientFailureCoolDownThreshold(t *testing.T) {
 		if !ok || auth == nil {
 			return false
 		}
-		state := auth.ModelStates[model]
-		if state == nil {
-			return false
-		}
-		return state.Unavailable
+		isBlocked, _, _ := isAuthBlockedForModel(auth, model, time.Now())
+		return isBlocked
 	}
 
-	t.Run("default threshold 3 - first two 503s do not cool down", func(t *testing.T) {
-		SetTransientFailureCoolDownMinFailures(3)
+	t.Run("default threshold 5 leaves four downstream retries unblocked", func(t *testing.T) {
+		SetTransientFailureCoolDownMinFailures(0)
 		m := newManager()
 		resetCounter("auth-1", "gpt-5")
 
-		fail503(m, "auth-1", "gpt-5")
-		if blocked(m, "auth-1", "gpt-5") {
-			t.Fatalf("first 503 should not cool down")
+		for attempt := 1; attempt < defaultTransientFailureCoolDownMinFailures; attempt++ {
+			fail503(m, "auth-1", "gpt-5")
+			if blocked(m, "auth-1", "gpt-5") {
+				t.Fatalf("attempt %d should not cool down", attempt)
+			}
 		}
 		fail503(m, "auth-1", "gpt-5")
-		if blocked(m, "auth-1", "gpt-5") {
-			t.Fatalf("second 503 should not cool down")
-		}
-		fail503(m, "auth-1", "gpt-5") // threshold hit
 		if !blocked(m, "auth-1", "gpt-5") {
-			t.Fatalf("third 503 should cool down")
+			t.Fatalf("fifth 503 should cool down")
+		}
+	})
+
+	t.Run("408 uses the same threshold", func(t *testing.T) {
+		SetTransientFailureCoolDownMinFailures(2)
+		m := newManager()
+		resetCounter("auth-1", "gpt-5")
+		err408 := &Error{Code: "request_timeout", HTTPStatus: http.StatusRequestTimeout, Message: "upstream timeout", Retryable: true}
+
+		fail(m, "auth-1", "gpt-5", err408, nil)
+		if blocked(m, "auth-1", "gpt-5") {
+			t.Fatal("first 408 should not cool down")
+		}
+		fail(m, "auth-1", "gpt-5", err408, nil)
+		if !blocked(m, "auth-1", "gpt-5") {
+			t.Fatal("second 408 should cool down")
+		}
+	})
+
+	t.Run("429 without retry after is transient", func(t *testing.T) {
+		SetTransientFailureCoolDownMinFailures(2)
+		m := newManager()
+		resetCounter("auth-1", "gpt-5")
+		err429 := &Error{Code: "rate_limit_exceeded", HTTPStatus: http.StatusTooManyRequests, Message: "rate limited", Retryable: true}
+
+		fail(m, "auth-1", "gpt-5", err429, nil)
+		if blocked(m, "auth-1", "gpt-5") {
+			t.Fatal("first 429 without Retry-After should not cool down")
+		}
+		fail(m, "auth-1", "gpt-5", err429, nil)
+		if !blocked(m, "auth-1", "gpt-5") {
+			t.Fatal("second 429 without Retry-After should cool down")
+		}
+	})
+
+	t.Run("429 with retry after cools immediately", func(t *testing.T) {
+		SetTransientFailureCoolDownMinFailures(5)
+		m := newManager()
+		resetCounter("auth-1", "gpt-5")
+		retryAfter := time.Minute
+
+		fail(m, "auth-1", "gpt-5", &Error{Code: "quota_exhausted", HTTPStatus: http.StatusTooManyRequests, Message: "quota exhausted"}, &retryAfter)
+		if !blocked(m, "auth-1", "gpt-5") {
+			t.Fatal("429 with Retry-After should cool down immediately")
+		}
+		auth := m.auths["auth-1"]
+		if auth.ModelStates["gpt-5"].Quota.Reason != "quota" {
+			t.Fatalf("quota reason = %q, want quota", auth.ModelStates["gpt-5"].Quota.Reason)
+		}
+	})
+
+	t.Run("status-less retryable errors use the threshold", func(t *testing.T) {
+		SetTransientFailureCoolDownMinFailures(2)
+		m := newManager()
+		resetCounter("auth-1", "gpt-5")
+		emptyStream := &Error{Code: "empty_stream", Message: "upstream stream has no source", Retryable: true}
+
+		fail(m, "auth-1", "gpt-5", emptyStream, nil)
+		if blocked(m, "auth-1", "gpt-5") {
+			t.Fatal("first retryable status-less failure should not cool down")
+		}
+		fail(m, "auth-1", "gpt-5", emptyStream, nil)
+		if !blocked(m, "auth-1", "gpt-5") {
+			t.Fatal("second retryable status-less failure should cool down")
+		}
+	})
+
+	t.Run("auth-level transient failures use the threshold", func(t *testing.T) {
+		SetTransientFailureCoolDownMinFailures(2)
+		m := newManager()
+		resetCounter("auth-1", "")
+		err503 := &Error{Code: "server_error", HTTPStatus: http.StatusServiceUnavailable, Message: "upstream 503"}
+
+		fail(m, "auth-1", "", err503, nil)
+		if m.auths["auth-1"].Unavailable {
+			t.Fatal("first auth-level 503 should not cool down")
+		}
+		fail(m, "auth-1", "", err503, nil)
+		if !m.auths["auth-1"].Unavailable {
+			t.Fatal("second auth-level 503 should cool down")
 		}
 	})
 
@@ -146,6 +225,7 @@ func TestTransientFailureCoolDownThreshold(t *testing.T) {
 		// Counter should be clear — next 503 burst starts from scratch.
 		auth, _ := m.auths["auth-1"]
 		clearAuthStateOnSuccess(auth, time.Now())
+		resetModelState(auth.ModelStates["gpt-5"], time.Now())
 		resetCounter("auth-1", "gpt-5")
 		auth.Status = StatusActive
 		auth.Unavailable = false
@@ -156,7 +236,7 @@ func TestTransientFailureCoolDownThreshold(t *testing.T) {
 		}
 	})
 
-	t.Run("non-5xx errors keep immediate cooling", func(t *testing.T) {
+	t.Run("hard errors keep immediate cooling", func(t *testing.T) {
 		SetTransientFailureCoolDownMinFailures(3)
 		m := newManager()
 		resetCounter("auth-1", "gpt-5")
@@ -169,17 +249,18 @@ func TestTransientFailureCoolDownThreshold(t *testing.T) {
 			Success:  false,
 			Error:    &Error{Code: "unauthorized", HTTPStatus: http.StatusUnauthorized, Message: "401"},
 		})
+		if !blocked(m, "auth-1", "gpt-5") {
+			t.Fatal("401 should cool down immediately")
+		}
 
-		// Non-transient errors produce auth-level Unavailable via applyAuthFailureState;
-		// assert transient counter was NOT consumed.
+		// A concurrent transient result must not clear the active hard-error cooldown
+		// or consume the next transient-failure burst.
 		fail503(m, "auth-1", "gpt-5")
 		auth, _ := m.auths["auth-1"]
 		if auth == nil {
 			t.Fatalf("auth missing")
 		}
-		// Now check whether another 503 would escalate the same auth beyond what a single 503 allows.
-		// At this point transient counter should be exactly 1 (just one 503 consumed), so a second 503
-		// still does not cool down under threshold 3.
+		// Clear the hard-error state, then verify the next 503 starts at one.
 		auth.Unavailable = false // clear to isolate transient-lane behaviour
 		auth.NextRetryAfter = time.Time{}
 		if st, ok := auth.ModelStates["gpt-5"]; ok && st != nil {
@@ -211,19 +292,19 @@ func TestTransientFailureCoolDownConfigWires(t *testing.T) {
 	Set := func(cfg *internalconfig.Config) {
 		v := cfg.QuotaExceeded.TransientFailureCoolDownMinFailures
 		if v < 1 {
-			v = 3
+			v = defaultTransientFailureCoolDownMinFailures
 		}
 		applyFn(v)
 	}
 
 	Set(base)
 	change := &internalconfig.Config{}
-	change.QuotaExceeded.TransientFailureCoolDownMinFailures = 5
+	change.QuotaExceeded.TransientFailureCoolDownMinFailures = 7
 	Set(change)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(called) != 2 || called[0] != 3 || called[1] != 5 {
-		t.Fatalf("expected [3 5], got %v", called)
+	if len(called) != 2 || called[0] != defaultTransientFailureCoolDownMinFailures || called[1] != 7 {
+		t.Fatalf("expected [%d 7], got %v", defaultTransientFailureCoolDownMinFailures, called)
 	}
 }

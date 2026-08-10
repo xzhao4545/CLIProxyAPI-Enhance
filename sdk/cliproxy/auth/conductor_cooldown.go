@@ -24,6 +24,8 @@ var transientErrorCooldownSeconds atomic.Int64
 
 var transientFailureCoolDownMinFailures atomic.Int64
 
+const defaultTransientFailureCoolDownMinFailures = 5
+
 // SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
 func SetQuotaCooldownDisabled(disable bool) {
 	quotaCooldownDisabled.Store(disable)
@@ -36,12 +38,12 @@ func SetTransientErrorCooldownSeconds(seconds int) {
 }
 
 // SetTransientFailureCoolDownMinFailures configures the minimum consecutive transient-failure
-// count (HTTP 500/502/503/504) for an auth+model before the model enters cooldown/unavailable.
-// Values below 1 are clamped to the default of 3; pass 1 explicitly to restore the legacy
+// count for an auth+model before the model enters cooldown/unavailable.
+// Values below 1 are clamped to the default of 5; pass 1 explicitly to restore the legacy
 // "cool down immediately on first transient failure" behavior.
 func SetTransientFailureCoolDownMinFailures(n int) {
 	if n < 1 {
-		n = 3 // default: 3 consecutive failures before transient cooling
+		n = defaultTransientFailureCoolDownMinFailures
 	}
 	transientFailureCoolDownMinFailures.Store(int64(n))
 }
@@ -51,7 +53,7 @@ func transientFailureCoolDownThreshold() int64 {
 	if v := transientFailureCoolDownMinFailures.Load(); v > 0 {
 		return v
 	}
-	return 3
+	return defaultTransientFailureCoolDownMinFailures
 }
 
 // transientFailureKey identifies a (auth, model) pair for the consecutive-failure counter.
@@ -110,6 +112,57 @@ func (c *transientFailureCounter) resetAuth(authID string) {
 func shouldApplyTransientCoolDown(authID, model string) bool {
 	count := transientFailures.increment(authID, model)
 	return int64(count) >= transientFailureCoolDownThreshold()
+}
+
+func isDeferredCoolDownFailure(resultErr *Error, retryAfter *time.Duration) bool {
+	if resultErr == nil {
+		return false
+	}
+	if isCloudflareChallengeResultError(resultErr) || isInvalidGrantResultError(resultErr) || isModelSupportResultError(resultErr) {
+		return false
+	}
+	switch statusCodeFromResult(resultErr) {
+	case http.StatusRequestTimeout,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	case http.StatusTooManyRequests:
+		if retryAfter != nil {
+			return false
+		}
+		code := strings.ToLower(strings.TrimSpace(resultErr.Code))
+		message := strings.ToLower(resultErr.Message)
+		quotaSignal := code + " " + message
+		if strings.Contains(quotaSignal, "quota") ||
+			strings.Contains(quotaSignal, "usage_limit_reached") ||
+			strings.Contains(quotaSignal, "free-usage-exhausted") ||
+			strings.Contains(quotaSignal, "credit balance") {
+			return false
+		}
+		return resultErr.Retryable ||
+			strings.Contains(code, "rate_limit") ||
+			strings.Contains(code, "keyword_filtered") ||
+			strings.Contains(message, "rate_limit_error") ||
+			strings.Contains(message, "rate_limit_exceeded") ||
+			strings.Contains(message, "too many requests") ||
+			strings.Contains(message, "at capacity")
+	default:
+		return resultErr.Retryable && statusCodeFromResult(resultErr) == 0
+	}
+}
+
+func shouldStartTransientCoolDown(authID, model string, disableCooling bool) bool {
+	if disableCooling {
+		transientFailures.reset(authID, model)
+		return false
+	}
+	if !shouldApplyTransientCoolDown(authID, model) {
+		return false
+	}
+	transientFailures.reset(authID, model)
+	return true
 }
 
 func quotaCooldownDisabledForAuth(auth *Auth) bool {
@@ -802,6 +855,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		if result.Success {
 			if result.Model != "" {
 				transientFailures.reset(auth.ID, result.Model)
+				transientFailures.reset(auth.ID, "")
 				state := ensureModelState(auth, result.Model)
 				resetModelState(state, now)
 				updateAggregatedAvailability(auth, now)
@@ -822,6 +876,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				if !isRequestScopedResultError(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
 					state := ensureModelState(auth, result.Model)
+					wasCooling := state.Unavailable && state.NextRetryAfter.After(now)
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
@@ -833,6 +888,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					}
 
 					statusCode := statusCodeFromResult(result.Error)
+					deferCoolDown := isDeferredCoolDownFailure(result.Error, result.RetryAfter)
+					if !deferCoolDown {
+						transientFailures.reset(auth.ID, result.Model)
+					}
 					if isModelSupportResultError(result.Error) {
 						next := now.Add(12 * time.Hour)
 						state.NextRetryAfter = next
@@ -858,6 +917,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							state.NextRetryAfter = now.Add(30 * time.Minute)
 							suspendReason = "invalid_grant"
 							shouldSuspendModel = true
+						}
+					} else if deferCoolDown {
+						if !wasCooling {
+							state.NextRetryAfter = time.Time{}
+							state.Unavailable = false
+						}
+						if !wasCooling && shouldStartTransientCoolDown(auth.ID, result.Model, disableCooling) {
+							state.NextRetryAfter = recoverableFailureRetryAfter(now, false)
+							state.Unavailable = true
 						}
 					} else {
 						switch statusCode {
@@ -909,21 +977,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								suspendReason = "quota"
 								shouldSuspendModel = true
 								setModelQuota = true
-							}
-						case 408, 500, 502, 503, 504:
-							if statusCode == 408 {
-								state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
-								state.Unavailable = !state.NextRetryAfter.IsZero()
-								transientFailures.reset(auth.ID, result.Model)
-							} else if disableCooling {
-								state.NextRetryAfter = time.Time{}
-							} else if !shouldApplyTransientCoolDown(auth.ID, result.Model) {
-								state.NextRetryAfter = time.Time{}
-								state.Unavailable = false
-							} else {
-								transientFailures.reset(auth.ID, result.Model)
-								state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
-								state.Unavailable = !state.NextRetryAfter.IsZero()
 							}
 						default:
 							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
@@ -1682,6 +1735,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.Quota.Exceeded = false
 		}
 	}()
+	wasCooling := auth.Unavailable && auth.NextRetryAfter.After(now)
 	auth.Unavailable = true
 	auth.Status = StatusError
 	auth.UpdatedAt = now
@@ -1692,6 +1746,19 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		}
 	}
 	statusCode := statusCodeFromResult(resultErr)
+	if isDeferredCoolDownFailure(resultErr, retryAfter) {
+		auth.StatusMessage = "transient upstream error"
+		if !wasCooling {
+			auth.NextRetryAfter = time.Time{}
+			auth.Unavailable = false
+		}
+		if !wasCooling && shouldStartTransientCoolDown(auth.ID, "", disableCooling) {
+			auth.NextRetryAfter = recoverableFailureRetryAfter(now, false)
+			auth.Unavailable = true
+		}
+		return
+	}
+	transientFailures.reset(auth.ID, "")
 	if isCloudflareChallengeResultError(resultErr) {
 		auth.StatusMessage = "cloudflare challenge"
 		next, backoffLevel := nextCloudflareCooldown(auth.Quota.BackoffLevel, disableCooling, now)
@@ -1749,13 +1816,6 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
-	case 408, 500, 502, 503, 504:
-		// Auth-level transient failures (model unknown / failed before model dispatch)
-		// still cool immediately - the per-model deferred-cooldown ladder in MarkResult
-		// only applies once a concrete (auth, model) pair is known.
-		auth.StatusMessage = "transient upstream error"
-		auth.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
-		auth.Unavailable = !auth.NextRetryAfter.IsZero()
 	default:
 		if auth.StatusMessage == "" {
 			auth.StatusMessage = "request failed"

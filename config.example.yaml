@@ -197,12 +197,13 @@ quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
   switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
   antigravity-credits: true # Whether to use credits as last-resort fallback when all free-tier auths are exhausted for Claude models
-  # Number of consecutive transient failures (HTTP 500/502/503/504) required for the same
-  # credential+model before the model is marked as unavailable/cooled down.
-  # Default: 3. Set to 1 to restore the legacy immediate-cool behavior on the first transient failure.
+  # Number of consecutive transient failures required for the same credential+model before
+  # it is cooled down. Applies to HTTP 408/500/502/503/504, status-less retryable failures,
+  # and retryable rate-limit HTTP 429 responses without an explicit Retry-After.
+  # Default: 5. Set to 1 to restore immediate cooling on the first transient failure.
   # Larger values let downstream/client retries observe more attempts before the gateway starts
   # short-circuiting them with a cooldown error.
-  transient-failure-cool-down-min-failures: 3
+  transient-failure-cool-down-min-failures: 5
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
