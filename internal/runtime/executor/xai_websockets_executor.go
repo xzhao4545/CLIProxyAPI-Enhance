@@ -782,7 +782,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				case "response.completed":
 					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
-						reporter.Publish(ctx, detail)
+						reporter.PublishFromPayload(ctx, payload, detail)
 					}
 					payload = xaiPatchCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
 					payload = xaiNormalizeReasoningSummaryData(payload)
@@ -794,7 +794,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				case "response.done":
 					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
-						reporter.Publish(ctx, detail)
+						reporter.PublishFromPayload(ctx, payload, detail)
 					}
 					if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
 						idMapper.state.recordTranscriptTurn(wsReqBody, payload, transcriptReset)

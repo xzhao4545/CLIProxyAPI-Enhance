@@ -189,6 +189,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 		lines := bytes.Split(data, []byte("\n"))
 		for i, line := range lines {
+			reporter.ObserveResponseModel(line)
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}
@@ -196,7 +197,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 		data = bytes.Join(lines, []byte("\n"))
 	} else {
-		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
+		reporter.PublishFromPayload(ctx, data, helps.ParseClaudeUsage(data))
 		data = restoreClaudeOAuthToolNamesFromResponse(data, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
 	}
 	data = e.restoreResponseModel(data, req.Model)

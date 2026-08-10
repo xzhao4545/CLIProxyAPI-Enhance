@@ -311,7 +311,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			payload = patchCodexCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
 			cacheCodexReasoningReplayFromCompleted(replayScope, payload)
 			if detail, ok := helps.ParseCodexUsage(payload); ok {
-				reporter.Publish(ctx, detail)
+				reporter.PublishFromPayload(ctx, payload, detail)
 			}
 			var param any
 			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)

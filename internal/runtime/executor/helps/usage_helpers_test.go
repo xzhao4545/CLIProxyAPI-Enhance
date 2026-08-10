@@ -517,6 +517,28 @@ func TestUsageReporterTrackHTTPClientStartsTTFTBeforeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUsageReporterObserveResponseCapturesSplitResponseModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "requested-model", nil)
+	resp := &http.Response{Body: io.NopCloser(io.MultiReader(
+		strings.NewReader(`{"id":"chatcmpl-1","mo`),
+		strings.NewReader(`del":"actual-model","choices":[]}`),
+	))}
+	reporter.ObserveResponse(resp)
+
+	buffer := make([]byte, 8)
+	if _, errCopy := io.CopyBuffer(io.Discard, resp.Body, buffer); errCopy != nil {
+		t.Fatalf("read response body: %v", errCopy)
+	}
+	if errClose := resp.Body.Close(); errClose != nil {
+		t.Fatalf("close response body: %v", errClose)
+	}
+
+	record := reporter.buildRecord(usage.Detail{}, false)
+	if record.ResponseModel != "actual-model" {
+		t.Fatalf("response model = %q, want actual-model", record.ResponseModel)
+	}
+}
+
 func TestUsageReporterBuildRecordIncludesRequestedModelAlias(t *testing.T) {
 	ctx := usage.WithRequestedModelAlias(context.Background(), "client-gpt")
 	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
@@ -596,7 +618,7 @@ func TestUsageReporterBuildRecordIncludesStreamFlag(t *testing.T) {
 
 func TestUsageReporterBuildRecordIncludesResponseModel(t *testing.T) {
 	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
-	reporter.responseModel = "gpt-5.4-turbo"
+	reporter.SetResponseModel("gpt-5.4-turbo")
 
 	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
 	if record.ResponseModel != "gpt-5.4-turbo" {
@@ -611,8 +633,8 @@ func TestUsageReporterPublishFromPayloadSetsResponseModel(t *testing.T) {
 	payload := []byte(`{"id":"chatcmpl-1","model":"gpt-5.4-turbo","usage":{"total_tokens":10}}`)
 	reporter.PublishFromPayload(context.Background(), payload, usage.Detail{TotalTokens: 10})
 
-	if reporter.responseModel != "gpt-5.4-turbo" {
-		t.Fatalf("response model = %q, want gpt-5.4-turbo", reporter.responseModel)
+	if reporter.currentResponseModel() != "gpt-5.4-turbo" {
+		t.Fatalf("response model = %q, want gpt-5.4-turbo", reporter.currentResponseModel())
 	}
 }
 
@@ -622,8 +644,8 @@ func TestUsageReporterPublishFromPayloadNestedResponseModel(t *testing.T) {
 	payload := []byte(`{"response":{"model":"gpt-5.4-turbo","usage":{"total_tokens":5}}}`)
 	reporter.PublishFromPayload(context.Background(), payload, usage.Detail{TotalTokens: 5})
 
-	if reporter.responseModel != "gpt-5.4-turbo" {
-		t.Fatalf("response model = %q, want gpt-5.4-turbo", reporter.responseModel)
+	if reporter.currentResponseModel() != "gpt-5.4-turbo" {
+		t.Fatalf("response model = %q, want gpt-5.4-turbo", reporter.currentResponseModel())
 	}
 }
 
@@ -632,8 +654,33 @@ func TestUsageReporterPublishFromPayloadIgnoresInvalidJSON(t *testing.T) {
 
 	reporter.PublishFromPayload(context.Background(), []byte("not json"), usage.Detail{})
 
-	if reporter.responseModel != "" {
-		t.Fatalf("response model = %q, want empty", reporter.responseModel)
+	if reporter.currentResponseModel() != "" {
+		t.Fatalf("response model = %q, want empty", reporter.currentResponseModel())
+	}
+}
+
+func TestUsageReporterObserveResponseModelUsesFirstSSEModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "claude", "requested-model", nil)
+
+	reporter.ObserveResponseModel([]byte(`data: {"type":"message_start","message":{"model":"claude-actual"}}`))
+	reporter.ObserveResponseModel([]byte(`data: {"type":"message_start","message":{"model":"claude-later"}}`))
+
+	if got := reporter.currentResponseModel(); got != "claude-actual" {
+		t.Fatalf("response model = %q, want claude-actual", got)
+	}
+}
+
+func TestStreamUsageBufferKeepsModelFromEarlierFrame(t *testing.T) {
+	var buffer StreamUsageBuffer
+	buffer.ObserveOpenAIStream([]byte(`data: {"id":"chatcmpl-1","model":"gpt-actual","choices":[{"delta":{"content":"hi"}}]}`))
+	buffer.ObserveOpenAIStream([]byte(`data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`))
+
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-requested", nil)
+	if !buffer.Publish(context.Background(), reporter) {
+		t.Fatal("Publish() = false, want true")
+	}
+	if got := reporter.currentResponseModel(); got != "gpt-actual" {
+		t.Fatalf("response model = %q, want gpt-actual", got)
 	}
 }
 

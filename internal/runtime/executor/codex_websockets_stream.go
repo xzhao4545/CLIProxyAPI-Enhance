@@ -388,7 +388,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				completedPayload = patchCodexCompletedOutput(completedPayload, outputItemsByIndex, outputItemsFallback)
 				cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
 				if detail, ok := helps.ParseCodexUsage(completedPayload); ok {
-					reporter.Publish(ctx, detail)
+					reporter.PublishFromPayload(ctx, completedPayload, detail)
 				}
 			}
 

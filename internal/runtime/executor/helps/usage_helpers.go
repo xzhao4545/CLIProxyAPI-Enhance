@@ -22,27 +22,29 @@ import (
 )
 
 type UsageReporter struct {
-	provider      string
-	executorType  string
-	model         string
-	alias         string
-	authID        string
-	authLabel     string
-	authIndex     string
-	authType      string
-	apiKey        string
-	source        string
-	reasoning     string
-	serviceTier   string
-	generate      bool
-	stream        bool
-	responseModel string
-	requestedAt   time.Time
-	ttftMu        sync.RWMutex
-	ttft          time.Duration
-	ttftStart     time.Time
-	ttftSet       bool
-	once          sync.Once
+	provider            string
+	executorType        string
+	model               string
+	alias               string
+	authID              string
+	authLabel           string
+	authIndex           string
+	authType            string
+	apiKey              string
+	source              string
+	reasoning           string
+	serviceTier         string
+	generate            bool
+	stream              bool
+	responseModel       string
+	responseModelBuffer []byte
+	responseModelMu     sync.RWMutex
+	requestedAt         time.Time
+	ttftMu              sync.RWMutex
+	ttft                time.Duration
+	ttftStart           time.Time
+	ttftSet             bool
+	once                sync.Once
 }
 
 type usageExecutor interface {
@@ -103,6 +105,60 @@ func (r *UsageReporter) SetStream(stream bool) {
 	r.stream = stream
 }
 
+// SetResponseModel records the first non-empty model name returned by the
+// upstream provider. Streaming responses may report the model before their
+// terminal usage event, so observations must survive until usage is published.
+func (r *UsageReporter) SetResponseModel(model string) {
+	if r == nil {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	r.responseModelMu.Lock()
+	if r.responseModel == "" {
+		r.responseModel = model
+		r.responseModelBuffer = nil
+	}
+	r.responseModelMu.Unlock()
+}
+
+// ObserveResponseModel extracts and records a model from a JSON response body
+// or SSE data line. Responses without a model field are ignored.
+func (r *UsageReporter) ObserveResponseModel(payload []byte) {
+	if r == nil {
+		return
+	}
+	r.SetResponseModel(canonicalResponseModel(payload))
+}
+
+func (r *UsageReporter) observeResponseModelChunk(chunk []byte) {
+	if r == nil || len(chunk) == 0 {
+		return
+	}
+	if model := canonicalResponseModel(chunk); model != "" {
+		r.SetResponseModel(model)
+		return
+	}
+
+	const maxResponseModelBuffer = 8 << 10
+	r.responseModelMu.Lock()
+	if r.responseModel != "" || len(r.responseModelBuffer) >= maxResponseModelBuffer {
+		r.responseModelMu.Unlock()
+		return
+	}
+	remaining := maxResponseModelBuffer - len(r.responseModelBuffer)
+	if len(chunk) > remaining {
+		chunk = chunk[:remaining]
+	}
+	r.responseModelBuffer = append(r.responseModelBuffer, chunk...)
+	buffered := bytes.Clone(r.responseModelBuffer)
+	r.responseModelMu.Unlock()
+
+	r.SetResponseModel(canonicalResponseModel(buffered))
+}
+
 // PublishFromPayload extracts the response's model name (when present) before
 // delegating to Publish. Callers that already hold the response payload should
 // use this variant so response_model is recorded without re-parsing.
@@ -110,10 +166,7 @@ func (r *UsageReporter) PublishFromPayload(ctx context.Context, payload []byte, 
 	if r == nil {
 		return
 	}
-	model := canonicalResponseModel(payload)
-	if model != "" {
-		r.responseModel = model
-	}
+	r.ObserveResponseModel(payload)
 	r.Publish(ctx, detail)
 }
 
@@ -121,16 +174,43 @@ func (r *UsageReporter) Publish(ctx context.Context, detail usage.Detail) {
 	r.publishWithOutcome(ctx, detail, false, usage.Failure{})
 }
 
-// canonicalResponseModel extracts the top-level `model` (or `response.model`)
-// field from an upstream response payload, when present. Returns "" otherwise.
+// canonicalResponseModel extracts the model field used by OpenAI-compatible,
+// Codex, and Claude response payloads. It accepts complete JSON bodies and SSE
+// data lines. Returns "" when the provider omits a response model.
 func canonicalResponseModel(payload []byte) string {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	payload = bytes.TrimSpace(payload)
+	if len(payload) == 0 {
 		return ""
 	}
-	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
-	if model == "" {
-		model = strings.TrimSpace(gjson.GetBytes(payload, "response.model").String())
+	if payload[0] == '{' {
+		return responseModelFromJSON(payload)
 	}
+	for _, line := range bytes.Split(payload, []byte("\n")) {
+		if jsonData := jsonPayload(line); len(jsonData) > 0 {
+			if model := responseModelFromJSON(jsonData); model != "" {
+				return model
+			}
+		}
+	}
+	return ""
+}
+
+func responseModelFromJSON(payload []byte) string {
+	for _, path := range []string{"model", "response.model", "message.model"} {
+		if model := strings.TrimSpace(gjson.GetBytes(payload, path).String()); model != "" {
+			return model
+		}
+	}
+	return ""
+}
+
+func (r *UsageReporter) currentResponseModel() string {
+	if r == nil {
+		return ""
+	}
+	r.responseModelMu.RLock()
+	model := r.responseModel
+	r.responseModelMu.RUnlock()
 	return model
 }
 
@@ -175,6 +255,7 @@ func (r *UsageReporter) ObserveResponse(resp *http.Response) {
 		mark: func() {
 			r.MarkFirstResponseByte()
 		},
+		observe: r.observeResponseModelChunk,
 	}
 }
 
@@ -310,7 +391,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
 		Generate:            usage.GenerateFlag(r.generate),
 		Stream:              r.stream,
-		ResponseModel:       r.responseModel,
+		ResponseModel:       r.currentResponseModel(),
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),
@@ -392,8 +473,9 @@ func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 
 type usageTTFTReadCloser struct {
 	io.ReadCloser
-	once sync.Once
-	mark func()
+	once    sync.Once
+	mark    func()
+	observe func([]byte)
 }
 
 func (r *usageTTFTReadCloser) Read(p []byte) (int, error) {
@@ -403,6 +485,9 @@ func (r *usageTTFTReadCloser) Read(p []byte) (int, error) {
 	n, errRead := r.ReadCloser.Read(p)
 	if n > 0 && r.mark != nil {
 		r.once.Do(r.mark)
+	}
+	if n > 0 && r.observe != nil {
+		r.observe(p[:n])
 	}
 	return n, errRead
 }
@@ -476,8 +561,9 @@ func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
 
 // StreamUsageBuffer keeps the latest usage detail observed in a stream.
 type StreamUsageBuffer struct {
-	detail usage.Detail
-	ok     bool
+	detail        usage.Detail
+	responseModel string
+	ok            bool
 }
 
 var (
@@ -517,7 +603,8 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
 	hasUsageCandidate := bytes.Contains(payload, openAIStreamUsageMarker)
 	needTier := b.detail.ResponseServiceTier == "" || hasUsageCandidate
 	hasTierCandidate := needTier && bytes.Contains(payload, openAIStreamServiceTierMarker)
-	if !hasUsageCandidate && !hasTierCandidate {
+	hasModelCandidate := b.responseModel == "" && bytes.Contains(payload, []byte(`"model"`))
+	if !hasUsageCandidate && !hasTierCandidate && !hasModelCandidate {
 		return
 	}
 	if !gjson.ValidBytes(payload) {
@@ -536,12 +623,19 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
 	if hasTierCandidate {
 		detail.ResponseServiceTier = extractResponseServiceTierFromValidJSON(payload)
 	}
+	if hasModelCandidate {
+		b.responseModel = canonicalResponseModel(payload)
+	}
 	b.Observe(detail, usageOK || detail.ResponseServiceTier != "")
 }
 
 // Publish emits the latest observed usage detail, if any.
 func (b *StreamUsageBuffer) Publish(ctx context.Context, reporter *UsageReporter) bool {
-	if b == nil || !b.ok || reporter == nil {
+	if b == nil || reporter == nil {
+		return false
+	}
+	reporter.SetResponseModel(b.responseModel)
+	if !b.ok {
 		return false
 	}
 	reporter.Publish(ctx, b.detail)
