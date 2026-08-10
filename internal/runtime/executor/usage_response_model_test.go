@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,29 +65,59 @@ func TestOpenAICompatExecutorRecordsUpstreamResponseModel(t *testing.T) {
 	}
 }
 
-func TestGeminiExecutorFallsBackToDispatchedResponseModel(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
-	}))
-	defer server.Close()
+func TestCodexExecutorRecordsTerminalResponseModelAcrossReadBoundaries(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[stream], func(t *testing.T) {
+			largeEvent := `data: {"type":"response.output_text.delta","delta":"` + strings.Repeat("x", 9<<10) + `"}` + "\n\n"
+			terminalStart := `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":0,"status":"completed","mo`
+			terminalEnd := `del":"gpt-5.4-actual","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"
+			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", responseModelRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"text/event-stream"}},
+					Body: io.NopCloser(io.MultiReader(
+						strings.NewReader(largeEvent),
+						strings.NewReader(terminalStart),
+						strings.NewReader(terminalEnd),
+					)),
+					Request: req,
+				}, nil
+			}))
 
-	plugin := &captureResponseModelUsagePlugin{provider: "gemini", model: "gemini-2.5-pro", records: make(chan usage.Record, 1)}
-	usage.RegisterPlugin(plugin)
-	executor := NewGeminiExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": server.URL, "api_key": "test"}}
+			plugin := &captureResponseModelUsagePlugin{provider: "codex", model: "gpt-5.4", records: make(chan usage.Record, 1)}
+			usage.RegisterPlugin(plugin)
+			executor := NewCodexExecutor(&config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "http://codex.test", "api_key": "test"}}
+			req := cliproxyexecutor.Request{
+				Model:   "gpt-5.4",
+				Payload: []byte(`{"model":"gpt-5.4","input":"hi","stream":true}`),
+			}
+			opts := cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FromString("openai-response"),
+				Stream:       stream,
+			}
 
-	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "gemini-2.5-pro",
-		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
+			if stream {
+				result, err := executor.ExecuteStream(ctx, auth, req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream error: %v", err)
+				}
+				for chunk := range result.Chunks {
+					if chunk.Err != nil {
+						t.Fatalf("stream chunk error: %v", chunk.Err)
+					}
+				}
+			} else {
+				if _, err := executor.Execute(ctx, auth, req, opts); err != nil {
+					t.Fatalf("Execute error: %v", err)
+				}
+			}
 
-	record := waitForResponseModelUsageRecord(t, plugin.records)
-	if record.ResponseModel != "gemini-2.5-pro" {
-		t.Fatalf("response model = %q, want gemini-2.5-pro", record.ResponseModel)
+			record := waitForResponseModelUsageRecord(t, plugin.records)
+			if record.ResponseModel != "gpt-5.4-actual" {
+				t.Fatalf("response model = %q, want gpt-5.4-actual", record.ResponseModel)
+			}
+		})
 	}
 }
 
@@ -137,4 +169,10 @@ func waitForResponseModelUsageRecord(t *testing.T, records <-chan usage.Record) 
 		t.Fatal("timed out waiting for usage record")
 		return usage.Record{}
 	}
+}
+
+type responseModelRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f responseModelRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

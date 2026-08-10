@@ -68,16 +68,16 @@ Each usage event captures the full request lifecycle:
 - **Auth type** (`auth_type`) — the credential kind: `oauth` or `apikey`.
 - **Auth category** (`auth_category`) — composite `provider/authType` string (e.g. `gemini-cli/oauth`, `openai-compat/apikey`) for cross-provider credential grouping.
 - **Stream mode** (`stream`) — `1` for SSE streaming requests, `0` for synchronous requests.
-- **Response model** (`response_model`) — the model name returned by the upstream provider in its response body or first stream chunk. When the provider omits it, the field falls back to the actual model dispatched to the executor.
+- **Response model** (`response_model`) — the model name explicitly returned by the upstream provider in its response body or stream events. The field remains empty when the provider does not return a model.
 - **Reasoning effort** (`reasoning_effort`) — the translated upstream thinking level applied to the request.
 - **First-token latency** (`ttft_ms`) — time in milliseconds from HTTP request dispatch to the first response byte, measured by the usage reporter's HTTP transport wrapper.
 
 The request and response model fields have distinct meanings. `model` is the
 resolved model sent to the provider, while `response_model` is extracted from
-the provider response when available, otherwise it uses the resolved model sent
-to the provider. The shared HTTP response-body observer captures models for
-regular JSON and SSE traffic. Claude observes its manually decoded response
-body, while WebSocket executors observe terminal response payloads explicitly.
+the provider response. The shared HTTP response-body observer captures models
+for regular JSON and SSE traffic. Claude observes its manually decoded response
+body, while Codex HTTP, SSE, and WebSocket executors observe their complete
+terminal response payloads explicitly.
 Stream requests retain the first non-empty model until the terminal usage
 record is published. Supported response locations are `model`,
 `response.model`, and Claude's stream-specific `message.model`.
