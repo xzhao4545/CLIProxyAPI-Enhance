@@ -214,6 +214,18 @@ func (r *UsageReporter) currentResponseModel() string {
 	return model
 }
 
+func (r *UsageReporter) responseModelOrFallback(model string) string {
+	model = strings.TrimSpace(model)
+	// An observed response model belongs to the reporter's primary model.
+	if model != strings.TrimSpace(r.model) {
+		return model
+	}
+	if responseModel := r.currentResponseModel(); responseModel != "" {
+		return responseModel
+	}
+	return model
+}
+
 func (r *UsageReporter) PublishAdditionalModel(ctx context.Context, model string, detail usage.Detail) {
 	record, ok := r.buildAdditionalModelRecord(model, detail)
 	if !ok {
@@ -391,7 +403,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
 		Generate:            usage.GenerateFlag(r.generate),
 		Stream:              r.stream,
-		ResponseModel:       r.currentResponseModel(),
+		ResponseModel:       r.responseModelOrFallback(model),
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
 		TTFT:                r.ttftDuration(),

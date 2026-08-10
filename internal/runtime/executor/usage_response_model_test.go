@@ -63,6 +63,32 @@ func TestOpenAICompatExecutorRecordsUpstreamResponseModel(t *testing.T) {
 	}
 }
 
+func TestGeminiExecutorFallsBackToDispatchedResponseModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+	}))
+	defer server.Close()
+
+	plugin := &captureResponseModelUsagePlugin{provider: "gemini", model: "gemini-2.5-pro", records: make(chan usage.Record, 1)}
+	usage.RegisterPlugin(plugin)
+	executor := NewGeminiExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": server.URL, "api_key": "test"}}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gemini-2.5-pro",
+		Payload: []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatGemini})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	record := waitForResponseModelUsageRecord(t, plugin.records)
+	if record.ResponseModel != "gemini-2.5-pro" {
+		t.Fatalf("response model = %q, want gemini-2.5-pro", record.ResponseModel)
+	}
+}
+
 func TestClaudeExecutorRecordsResponseModelAfterGzipDecompression(t *testing.T) {
 	var compressed bytes.Buffer
 	gzipWriter := gzip.NewWriter(&compressed)

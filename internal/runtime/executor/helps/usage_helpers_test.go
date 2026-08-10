@@ -626,6 +626,24 @@ func TestUsageReporterBuildRecordIncludesResponseModel(t *testing.T) {
 	}
 }
 
+func TestUsageReporterBuildRecordFallsBackToDispatchedModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "gemini", "gemini-2.5-pro", nil)
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.ResponseModel != "gemini-2.5-pro" {
+		t.Fatalf("response model = %q, want gemini-2.5-pro", record.ResponseModel)
+	}
+}
+
+func TestUsageReporterFailureRecordFallsBackToDispatchedModel(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "gemini", "gemini-2.5-pro", nil)
+
+	record := reporter.buildRecord(usage.Detail{}, true, usage.Failure{Body: "upstream error"})
+	if record.ResponseModel != "gemini-2.5-pro" {
+		t.Fatalf("response model = %q, want gemini-2.5-pro", record.ResponseModel)
+	}
+}
+
 func TestUsageReporterPublishFromPayloadSetsResponseModel(t *testing.T) {
 	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
 	reporter.SetStream(true)
@@ -711,6 +729,23 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	}
 	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CachedTokens: 2}); !ok {
 		t.Fatalf("expected non-zero cached token usage to be recorded")
+	}
+}
+
+func TestUsageReporterAdditionalModelRecordUsesOwnResponseModel(t *testing.T) {
+	reporter := &UsageReporter{
+		provider:    "codex",
+		model:       "gpt-5.4",
+		requestedAt: time.Now(),
+	}
+	reporter.SetResponseModel("gpt-5.4-turbo")
+
+	record, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{InputTokens: 2})
+	if !ok {
+		t.Fatal("expected non-zero input token usage to be recorded")
+	}
+	if record.ResponseModel != "gpt-image-2" {
+		t.Fatalf("response model = %q, want gpt-image-2", record.ResponseModel)
 	}
 }
 
