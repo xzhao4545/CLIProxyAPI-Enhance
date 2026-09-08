@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -440,5 +441,71 @@ func TestOpenAICompatExecutorStreamSkipsKeepAliveUntilDataLine(t *testing.T) {
 	}
 	if gjson.Get(got.String(), "choices.0.delta.content").String() != "hello" {
 		t.Fatalf("stream payload = %s", got.String())
+	}
+}
+
+func TestOpenAICompatExecutorStreamKeepsUsageWhenTransportFailsAfterUsage(t *testing.T) {
+	const provider = "openai-compat-usage-transport-test"
+	stream := []byte("data: {\"id\":\"chatcmpl_1\",\"model\":\"actual-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n")
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", responseModelRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			Body:       io.NopCloser(io.MultiReader(bytes.NewReader(stream), unexpectedEOFReader{})),
+			Request:    req,
+		}, nil
+	}))
+	plugin := &captureResponseModelUsagePlugin{provider: provider, records: make(chan usage.Record, 1)}
+	usage.RegisterPlugin(plugin)
+	executor := NewOpenAICompatExecutor(provider, &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": "http://compat.test", "api_key": "test"}}
+
+	result, err := executor.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "requested-model",
+		Payload: []byte(`{"model":"requested-model","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for range result.Chunks {
+	}
+
+	record := waitForResponseModelUsageRecord(t, plugin.records)
+	if !record.Failed {
+		t.Fatal("usage record not marked failed")
+	}
+	if record.Detail.TotalTokens != 3 {
+		t.Fatalf("total tokens = %d, want 3", record.Detail.TotalTokens)
+	}
+}
+
+func TestOpenAICompatExecutorStreamWithoutUsageStillPublishesRequest(t *testing.T) {
+	const provider = "openai-compat-empty-usage-test"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer server.Close()
+	plugin := &captureResponseModelUsagePlugin{provider: provider, records: make(chan usage.Record, 1)}
+	usage.RegisterPlugin(plugin)
+	executor := NewOpenAICompatExecutor(provider, &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": server.URL, "api_key": "test"}}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "requested-model",
+		Payload: []byte(`{"model":"requested-model","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+
+	record := waitForResponseModelUsageRecord(t, plugin.records)
+	if record.Failed || record.Detail.TotalTokens != 0 {
+		t.Fatalf("usage record = %+v, want successful zero-token request", record)
 	}
 }
