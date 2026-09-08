@@ -14,7 +14,7 @@ Persistent events include:
 - model, client model, response model, route, and status
 - stream mode (streaming vs sync)
 - HTTP and upstream status fields
-- prompt, completion, total, reasoning, cached, cache-read, and cache-creation token counts
+- prompt, completion, total, reasoning, cached, cache-read, and cache-creation token counts; raw events also retain whether the upstream explicitly disclosed the reasoning token count, including an explicit zero
 - reasoning effort and first-token latency (TTFT in milliseconds)
 - client key hash
 - failure stage, error code, sanitized error message, and optional raw provider error
@@ -44,6 +44,8 @@ Metrics include:
 - RPM and TPM over the selected time window
 - provider request, token, and success-rate metrics
 - model request and token metrics
+
+Raw event responses expose `reasoning_tokens_present`. Consumers display the numeric `reasoning_tokens` value only when this flag is true; an omitted upstream reasoning-token field is unknown and should be displayed as `-`, not `0`.
 
 ## Failure Handling
 

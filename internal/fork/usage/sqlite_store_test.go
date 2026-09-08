@@ -16,23 +16,24 @@ func TestSQLiteStoreInsertQueryAndAggregate(t *testing.T) {
 
 	base := time.Date(2026, 5, 28, 10, 0, 0, 0, time.UTC)
 	mustInsertEvent(t, store, Event{
-		RequestID:        "req-1",
-		StartedAt:        base,
-		CompletedAt:      base.Add(150 * time.Millisecond),
-		DurationMS:       150,
-		ProviderKey:      "gemini",
-		ProviderLabel:    "Gemini Primary",
-		AuthID:           "auth-1",
-		AuthLabel:        "Gemini Key",
-		AuthIndex:        "idx-1",
-		Model:            "gemini-2.5-pro",
-		ClientModel:      "team/gemini",
-		Route:            "POST /v1/chat/completions",
-		Status:           StatusSuccess,
-		HTTPStatus:       200,
-		PromptTokens:     10,
-		CompletionTokens: 20,
-		TotalTokens:      30,
+		RequestID:              "req-1",
+		StartedAt:              base,
+		CompletedAt:            base.Add(150 * time.Millisecond),
+		DurationMS:             150,
+		ProviderKey:            "gemini",
+		ProviderLabel:          "Gemini Primary",
+		AuthID:                 "auth-1",
+		AuthLabel:              "Gemini Key",
+		AuthIndex:              "idx-1",
+		Model:                  "gemini-2.5-pro",
+		ClientModel:            "team/gemini",
+		Route:                  "POST /v1/chat/completions",
+		Status:                 StatusSuccess,
+		HTTPStatus:             200,
+		PromptTokens:           10,
+		CompletionTokens:       20,
+		TotalTokens:            30,
+		ReasoningTokensPresent: true,
 	})
 	mustInsertEvent(t, store, Event{
 		RequestID:        "req-2",
@@ -67,8 +68,8 @@ func TestSQLiteStoreInsertQueryAndAggregate(t *testing.T) {
 	if page.Total != 1 || len(page.Events) != 1 {
 		t.Fatalf("QueryEvents() total=%d len=%d, want 1", page.Total, len(page.Events))
 	}
-	if page.Events[0].ProviderLabel != "Gemini Primary" || page.Events[0].ProviderErrorRaw != "" {
-		t.Fatalf("event = %+v", page.Events[0])
+	if event := page.Events[0]; event.ProviderLabel != "Gemini Primary" || event.ProviderErrorRaw != "" || !event.ReasoningTokensPresent {
+		t.Fatalf("event = %+v", event)
 	}
 
 	withRaw, err := store.QueryEvents(QueryFilter{Status: StatusFailure, IncludeErrorRaw: true})

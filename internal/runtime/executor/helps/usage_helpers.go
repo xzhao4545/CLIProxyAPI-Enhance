@@ -642,6 +642,19 @@ func (b *StreamUsageBuffer) Publish(ctx context.Context, reporter *UsageReporter
 	return true
 }
 
+// PublishFailure emits the latest observed usage as a failed request.
+func (b *StreamUsageBuffer) PublishFailure(ctx context.Context, reporter *UsageReporter, errs ...error) bool {
+	if b == nil || reporter == nil {
+		return false
+	}
+	reporter.SetResponseModel(b.responseModel)
+	if !b.ok {
+		return false
+	}
+	reporter.publishWithOutcome(ctx, b.detail, true, failFromErrors(errs...))
+	return true
+}
+
 // Detail returns the latest observed usage detail.
 func (b *StreamUsageBuffer) Detail() (usage.Detail, bool) {
 	if b == nil || !b.ok {
@@ -743,6 +756,7 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	}
 	if reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
+		detail.ReasoningTokensPresent = true
 	}
 	if hasOpenAIStyleUsageBucketFields(usageNode) {
 		if inputNode.Exists() && outputNode.Exists() {
@@ -858,6 +872,7 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 		CachedTokens:    cachedTokens,
 		CacheReadTokens: cachedTokens,
 	}
+	detail.ReasoningTokensPresent = node.Get("thoughtsTokenCount").Exists()
 	if !okInput {
 		detail.TokenBreakdown = invalidUsageTokenBreakdown(detail.TotalTokens)
 		return detail
@@ -898,6 +913,7 @@ func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
 		CacheReadTokens:     cacheRead.Int(),
 		CacheCreationTokens: firstExistingUsageNode(node, "cache_creation_tokens", "cacheCreationTokens", "cache_write_tokens", "cacheWriteTokens").Int(),
 	}
+	detail.ReasoningTokensPresent = firstExistingUsageNode(node, "reasoning_tokens", "thoughtsTokenCount", "total_thought_tokens").Exists()
 	if !okInput {
 		detail.TokenBreakdown = invalidUsageTokenBreakdown(detail.TotalTokens)
 		return detail

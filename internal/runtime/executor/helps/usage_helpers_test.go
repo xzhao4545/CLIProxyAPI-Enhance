@@ -32,6 +32,9 @@ func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	if detail.ReasoningTokens != 5 {
 		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 5)
 	}
+	if !detail.ReasoningTokensPresent {
+		t.Fatal("reasoning tokens present = false, want true")
+	}
 	if !detail.TokenBreakdown.Valid() || detail.TokenBreakdown.Quality != usage.TokenAccountingQualityComplete {
 		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
 	}
@@ -66,6 +69,20 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 	}
 	if detail.TokenBreakdown.Input.UncachedTokens != 3 || detail.TokenBreakdown.Output.NonReasoningTokens != 11 {
 		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+}
+
+func TestParseOpenAIUsageDistinguishesUndisclosedReasoningTokens(t *testing.T) {
+	detail := ParseOpenAIUsage([]byte(`{"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`))
+	if detail.ReasoningTokensPresent {
+		t.Fatal("reasoning tokens present = true, want false")
+	}
+}
+
+func TestParseOpenAIUsagePreservesExplicitZeroReasoningTokens(t *testing.T) {
+	detail := ParseOpenAIUsage([]byte(`{"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30,"output_tokens_details":{"reasoning_tokens":0}}}`))
+	if !detail.ReasoningTokensPresent || detail.ReasoningTokens != 0 {
+		t.Fatalf("detail = %+v, want disclosed zero reasoning tokens", detail)
 	}
 }
 

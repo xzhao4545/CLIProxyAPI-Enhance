@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
 	completion_tokens INTEGER NOT NULL DEFAULT 0,
 	total_tokens INTEGER NOT NULL DEFAULT 0,
 	reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+	reasoning_tokens_present INTEGER NOT NULL DEFAULT 0,
 	reasoning_effort TEXT NOT NULL DEFAULT '',
 	cached_tokens INTEGER NOT NULL DEFAULT 0,
 	cache_read_tokens INTEGER NOT NULL DEFAULT 0,

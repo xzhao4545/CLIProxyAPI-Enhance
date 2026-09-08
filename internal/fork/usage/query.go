@@ -472,7 +472,7 @@ func eventSelectFields(includeRaw bool) string {
 	return `id, request_id, started_at, completed_at, duration_ms, provider_key, provider_label,
 auth_id, auth_label, auth_index, auth_type, auth_category, model, client_model,
 response_model, route, stream, status, http_status, upstream_status, prompt_tokens,
-completion_tokens, total_tokens, reasoning_tokens, reasoning_effort, cached_tokens,
+completion_tokens, total_tokens, reasoning_tokens, reasoning_tokens_present, reasoning_effort, cached_tokens,
 cache_read_tokens, cache_creation_tokens, ttft_ms, client_key_hash, error_stage,
 error_code, error_message, ` + raw + `, metadata_json`
 }
@@ -481,6 +481,7 @@ func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
 	var event Event
 	var startedMS, completedMS int64
 	var streamFlag int
+	var reasoningTokensPresentFlag int
 	if err := rows.Scan(
 		&event.ID,
 		&event.RequestID,
@@ -506,6 +507,7 @@ func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
 		&event.CompletionTokens,
 		&event.TotalTokens,
 		&event.ReasoningTokens,
+		&reasoningTokensPresentFlag,
 		&event.ReasoningEffort,
 		&event.CachedTokens,
 		&event.CacheReadTokens,
@@ -521,6 +523,7 @@ func scanEvent(rows *sql.Rows, includeRaw bool) (Event, error) {
 		return Event{}, fmt.Errorf("scan usage event: %w", err)
 	}
 	event.Stream = streamFlag != 0
+	event.ReasoningTokensPresent = reasoningTokensPresentFlag != 0
 	event.StartedAt = time.UnixMilli(startedMS).UTC()
 	event.CompletedAt = time.UnixMilli(completedMS).UTC()
 	if !includeRaw {

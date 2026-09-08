@@ -120,11 +120,11 @@ INSERT INTO usage_events (
 	stats_provider_key, stats_provider_label, auth_id, auth_label, auth_index,
 	auth_type, auth_category, model, client_model, response_model, route, stream,
 	status, http_status, upstream_status, prompt_tokens, completion_tokens,
-	total_tokens, reasoning_tokens, reasoning_effort, cached_tokens, cache_read_tokens,
+	total_tokens, reasoning_tokens, reasoning_tokens_present, reasoning_effort, cached_tokens, cache_read_tokens,
 	cache_creation_tokens, ttft_ms,
 	client_key_hash, error_stage, error_code, error_message, provider_error_raw,
 	metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.RequestID,
 		event.StartedAt.UTC().UnixMilli(),
 		event.CompletedAt.UTC().UnixMilli(),
@@ -150,6 +150,7 @@ INSERT INTO usage_events (
 		event.CompletionTokens,
 		event.TotalTokens,
 		event.ReasoningTokens,
+		streamFlag(event.ReasoningTokensPresent),
 		event.ReasoningEffort,
 		event.CachedTokens,
 		event.CacheReadTokens,
@@ -196,16 +197,17 @@ func (s *SQLiteStore) ensureUsageEventColumns(ctx context.Context) error {
 		return fmt.Errorf("iterate usage_events columns: %w", errRows)
 	}
 	migrations := map[string]string{
-		"stats_provider_key":    "ALTER TABLE usage_events ADD COLUMN stats_provider_key TEXT NOT NULL DEFAULT ''",
-		"stats_provider_label":  "ALTER TABLE usage_events ADD COLUMN stats_provider_label TEXT NOT NULL DEFAULT ''",
-		"auth_type":             "ALTER TABLE usage_events ADD COLUMN auth_type TEXT NOT NULL DEFAULT ''",
-		"auth_category":         "ALTER TABLE usage_events ADD COLUMN auth_category TEXT NOT NULL DEFAULT ''",
-		"response_model":        "ALTER TABLE usage_events ADD COLUMN response_model TEXT NOT NULL DEFAULT ''",
-		"stream":                "ALTER TABLE usage_events ADD COLUMN stream INTEGER NOT NULL DEFAULT 0",
-		"reasoning_effort":      "ALTER TABLE usage_events ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''",
-		"cache_read_tokens":     "ALTER TABLE usage_events ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
-		"cache_creation_tokens": "ALTER TABLE usage_events ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
-		"ttft_ms":               "ALTER TABLE usage_events ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0",
+		"stats_provider_key":       "ALTER TABLE usage_events ADD COLUMN stats_provider_key TEXT NOT NULL DEFAULT ''",
+		"stats_provider_label":     "ALTER TABLE usage_events ADD COLUMN stats_provider_label TEXT NOT NULL DEFAULT ''",
+		"auth_type":                "ALTER TABLE usage_events ADD COLUMN auth_type TEXT NOT NULL DEFAULT ''",
+		"auth_category":            "ALTER TABLE usage_events ADD COLUMN auth_category TEXT NOT NULL DEFAULT ''",
+		"response_model":           "ALTER TABLE usage_events ADD COLUMN response_model TEXT NOT NULL DEFAULT ''",
+		"stream":                   "ALTER TABLE usage_events ADD COLUMN stream INTEGER NOT NULL DEFAULT 0",
+		"reasoning_tokens_present": "ALTER TABLE usage_events ADD COLUMN reasoning_tokens_present INTEGER NOT NULL DEFAULT 0",
+		"reasoning_effort":         "ALTER TABLE usage_events ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''",
+		"cache_read_tokens":        "ALTER TABLE usage_events ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+		"cache_creation_tokens":    "ALTER TABLE usage_events ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
+		"ttft_ms":                  "ALTER TABLE usage_events ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0",
 	}
 	for column, statement := range migrations {
 		if _, exists := columns[column]; exists {
