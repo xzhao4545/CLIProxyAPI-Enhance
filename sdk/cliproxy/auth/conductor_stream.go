@@ -115,6 +115,10 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if chunk.Err != nil && !failed {
+				if ctx != nil && ctx.Err() != nil {
+					forward = false
+					return false
+				}
 				failed = true
 				rerr := resultErrorFromError(chunk.Err)
 				m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}, auth, ephemeralResult)
