@@ -25,6 +25,7 @@ Primary runtime surfaces:
 - [Management API](api/management.md)
 - [Keyword Filters](features/keyword-filters.md)
 - [Retry and Cooldown](features/retry-cooldown.md)
+- [Upstream Error Responses](features/upstream-errors.md)
 - [Usage Statistics](features/usage-statistics.md)
 - [Management Panel](operations/management-panel.md)
 

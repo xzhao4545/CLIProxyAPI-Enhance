@@ -5,8 +5,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
+
+func TestRecorderKeepsUpstreamStatusAfterDownstreamReplacement(t *testing.T) {
+	ctx := logging.WithResponseStatusHolder(context.Background())
+	logging.SetResponseStatus(ctx, 502)
+	event := buildEvent(ctx, coreusage.Record{
+		Provider: "claude", Failed: true,
+		Fail: coreusage.Failure{StatusCode: 429, Body: "rate limited"},
+	}, Config{})
+	store := openTestStore(t)
+	defer closeTestStore(t, store)
+	mustInsertEvent(t, store, event)
+	page, err := store.QueryEvents(QueryFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].HTTPStatus != 429 || page.Events[0].UpstreamStatus != 429 {
+		t.Fatalf("recorded errors = %+v, want real upstream HTTP status 429", page.Events)
+	}
+}
 
 func TestRecorderCacheHitRateUsesTotalInput(t *testing.T) {
 	for _, tc := range []struct {

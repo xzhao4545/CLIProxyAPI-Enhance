@@ -77,6 +77,15 @@ type ModelExecutionStreamError struct {
 	StatusCode int         `json:"status_code"`
 	Message    string      `json:"message"`
 	Headers    http.Header `json:"headers"`
+	cause      error
+}
+
+// Unwrap preserves the upstream error for downstream status mapping and lifecycle hooks.
+func (e *ModelExecutionStreamError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 // Error returns the stream error message or the HTTP status text.
@@ -319,6 +328,7 @@ func modelExecutionStreamErrorFromMessage(errMsg *interfaces.ErrorMessage) *Mode
 		StatusCode: errMsg.StatusCode,
 		Message:    message,
 		Headers:    cloneHeader(errMsg.Addon),
+		cause:      errMsg.Error,
 	}
 }
 

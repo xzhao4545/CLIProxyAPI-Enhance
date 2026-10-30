@@ -44,6 +44,15 @@ const defaultVideoAuthBindingTTL = 3 * time.Hour
 
 var videoAuthBindings = newVideoAuthBindingStore()
 
+type videoContentStatusError struct {
+	error
+	status int
+}
+
+func (e videoContentStatusError) StatusCode() int         { return e.status }
+func (e videoContentStatusError) UpstreamStatusCode() int { return e.status }
+func (e videoContentStatusError) Unwrap() error           { return e.error }
+
 type xaiVideoCreateMetadata struct {
 	Model         string
 	UpstreamModel string
@@ -897,9 +906,10 @@ func (h *OpenAIAPIHandler) writeVideoContentFromURL(c *gin.Context, contentURL s
 		if strings.TrimSpace(string(body)) == "" {
 			errDownloadStatus = fmt.Errorf("video content download failed: %s", resp.Status)
 		}
-		errMsg := &interfaces.ErrorMessage{StatusCode: resp.StatusCode, Error: errDownloadStatus}
+		errUpstream := videoContentStatusError{error: errDownloadStatus, status: resp.StatusCode}
+		errMsg := &interfaces.ErrorMessage{StatusCode: resp.StatusCode, Error: errUpstream}
 		h.WriteErrorResponse(c, errMsg)
-		return errDownloadStatus
+		return errUpstream
 	}
 
 	copyVideoContentHeaders(c.Writer.Header(), resp.Header)

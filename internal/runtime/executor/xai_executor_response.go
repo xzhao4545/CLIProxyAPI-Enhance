@@ -862,7 +862,7 @@ const xaiFreeUsageExhaustedCooldown = 24 * time.Hour
 // auth cooldown / account rotation. Generic 429s stay without an explicit
 // retry hint so conductor backoff still applies.
 func xaiStatusErr(code int, body []byte) statusErr {
-	err := statusErr{code: code, msg: string(body)}
+	err := statusErr{code: code, upstreamStatus: code, msg: string(body)}
 	if code != http.StatusTooManyRequests || len(body) == 0 {
 		return err
 	}

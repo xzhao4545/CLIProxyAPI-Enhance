@@ -53,6 +53,8 @@ Raw event responses expose `reasoning_tokens_present`. Consumers display the num
 
 ## Failure Handling
 
+Failure records prefer the upstream status disclosed by the provider. Both `http_status` and `upstream_status` retain that status when `upstream-4xx-to-502` maps a downstream response to 502 or streaming has already committed HTTP 200. Downstream mapping does not modify usage records, retry classification, or credential cooldowns. See [Upstream Error Responses](upstream-errors.md).
+
 Failure rows group by failure dimensions such as error stage, error code, raw provider key, raw provider label, and model. Raw provider error payloads are not returned by default. `include_error_raw=true` is required on event queries and the stored value is size-limited and sanitized.
 
 Stream wrappers can mark a request-scoped failure override after an upstream stream has started. Usage records published inside that request-scoped override are held until the stream attempt reaches its final outcome, then the usage manager applies the final override before plugins persist the record. Late stream failures are stored with `status=failure` and their failure code/message. Keyword filter matches use this path with `error_stage=stream`, `error_code=keyword_filtered`, and an error message containing the matched keyword plus bounded response context. Each independent upstream attempt uses a fresh failure-override scope so deferred usage from a failed attempt is flushed before fallback/retry continues. Codex/xAI Responses streams that close without a `response.completed` terminal event publish a failed usage record with HTTP status `408` and an incomplete-stream message, so silent disconnects still appear in SQLite and management failure views.

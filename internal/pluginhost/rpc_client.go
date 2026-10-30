@@ -48,6 +48,9 @@ func (e rpcPluginError) StatusCode() int {
 	return e.statusCode
 }
 
+// UpstreamStatusCode exposes an error status disclosed by the external plugin.
+func (e rpcPluginError) UpstreamStatusCode() int { return e.statusCode }
+
 type rpcResponseNormalizer struct {
 	*rpcPluginAdapter
 	method string

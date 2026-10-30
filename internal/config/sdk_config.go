@@ -55,6 +55,10 @@ type SDKConfig struct {
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
 
+	// Upstream4xxTo502 replaces upstream 4xx statuses with 502 in downstream responses.
+	// Usage statistics and credential handling retain the actual upstream status.
+	Upstream4xxTo502 bool `yaml:"upstream-4xx-to-502" json:"upstream-4xx-to-502"`
+
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`
 

@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +11,19 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
+
+type upstreamUsageStatusError struct{}
+
+func (upstreamUsageStatusError) Error() string           { return "provider failure" }
+func (upstreamUsageStatusError) StatusCode() int         { return 429 }
+func (upstreamUsageStatusError) UpstreamStatusCode() int { return 400 }
+
+func TestFailureUsageUsesRealUpstreamStatus(t *testing.T) {
+	failure := failFromErrors(fmt.Errorf("wrapped: %w", upstreamUsageStatusError{}))
+	if failure.StatusCode != 400 {
+		t.Fatalf("failure status = %d, want actual upstream 400", failure.StatusCode)
+	}
+}
 
 func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	data := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)

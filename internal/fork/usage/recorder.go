@@ -312,7 +312,7 @@ func buildEvent(ctx context.Context, record coreusage.Record, cfg Config) Event 
 	if failStatus <= 0 && failed {
 		failStatus = httpStatus
 	}
-	if httpStatus <= 0 && failed {
+	if failed && failStatus > 0 {
 		httpStatus = failStatus
 	}
 	if httpStatus <= 0 && !failed {

@@ -181,7 +181,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 		helps.AppendAPIResponseChunk(ctx, e.cfg, wsResp.Body)
 	}
 	if wsResp.Status < 200 || wsResp.Status >= 300 {
-		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
+		return resp, statusErr{code: wsResp.Status, upstreamStatus: wsResp.Status, msg: string(wsResp.Body)}
 	}
 	reporter.Publish(ctx, helps.ParseGeminiUsage(wsResp.Body))
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -262,7 +262,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			body.Write(firstEvent.Payload)
 		}
 		if firstEvent.Type == wsrelay.MessageTypeStreamEnd {
-			return nil, statusErr{code: firstEvent.Status, msg: body.String()}
+			return nil, statusErr{code: firstEvent.Status, upstreamStatus: firstEvent.Status, msg: body.String()}
 		}
 		for event := range wsStream {
 			if event.Err != nil {
@@ -286,7 +286,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				break
 			}
 		}
-		return nil, statusErr{code: firstEvent.Status, msg: body.String()}
+		return nil, statusErr{code: firstEvent.Status, upstreamStatus: firstEvent.Status, msg: body.String()}
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func(first wsrelay.StreamEvent) {
@@ -425,7 +425,7 @@ func (e *AIStudioExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.A
 		helps.AppendAPIResponseChunk(ctx, e.cfg, resp.Body)
 	}
 	if resp.Status < 200 || resp.Status >= 300 {
-		return cliproxyexecutor.Response{}, statusErr{code: resp.Status, msg: string(resp.Body)}
+		return cliproxyexecutor.Response{}, statusErr{code: resp.Status, upstreamStatus: resp.Status, msg: string(resp.Body)}
 	}
 	totalTokens := gjson.GetBytes(resp.Body, "totalTokens").Int()
 	if totalTokens <= 0 {

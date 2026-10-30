@@ -413,6 +413,10 @@ func failFromErrors(errs ...error) usage.Failure {
 		if errors.As(err, &se) && se != nil {
 			fail.StatusCode = se.StatusCode()
 		}
+		var upstream interface{ UpstreamStatusCode() int }
+		if errors.As(err, &upstream) && upstream.UpstreamStatusCode() > 0 {
+			fail.StatusCode = upstream.UpstreamStatusCode()
+		}
 		return fail
 	}
 	return usage.Failure{}

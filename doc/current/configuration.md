@@ -43,6 +43,10 @@ Relative SQLite paths resolve next to the active config file. `:memory:` and abs
 
 `sqlite-path` defaults to `usage.sqlite3` when empty. `max-provider-error-bytes` defaults to `8192` when unset or non-positive. Provider label override keys are normalized to lower-case provider keys and empty labels are ignored.
 
+## Upstream Error Responses
+
+`upstream-4xx-to-502` is a boolean that defaults to `false`. Enabling it returns upstream model API 4xx errors to downstream clients as 502 while usage statistics record the real upstream status. The setting supports configuration hot reload and the management panel visual/YAML editors. See [Upstream Error Responses](features/upstream-errors.md) for response-path and stream behavior.
+
 ## Keyword Filters
 
 `keyword-filters` defines response-content rules used by the auth conductor to classify matching upstream responses as retryable provider failures:

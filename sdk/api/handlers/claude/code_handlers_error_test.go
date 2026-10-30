@@ -10,8 +10,26 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/tidwall/gjson"
 )
+
+type claudeUpstreamStatusError struct{}
+
+func (claudeUpstreamStatusError) Error() string           { return "upstream failure" }
+func (claudeUpstreamStatusError) UpstreamStatusCode() int { return 429 }
+
+func TestWriteClaudeErrorReplacesOnlyDownstreamStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &ClaudeCodeAPIHandler{BaseAPIHandler: handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{Upstream4xxTo502: true}, nil)}
+	msg := &interfaces.ErrorMessage{StatusCode: 429, Error: claudeUpstreamStatusError{}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	h.WriteErrorResponse(c, msg)
+	if w.Code != 502 || msg.StatusCode != 429 || gjson.GetBytes(w.Body.Bytes(), "error.type").String() != "api_error" {
+		t.Fatalf("downstream=%d upstream=%d body=%s", w.Code, msg.StatusCode, w.Body.String())
+	}
+}
 
 func TestClaudeErrorExtractsOpenAIStyleUpstreamJSON(t *testing.T) {
 	handler := &ClaudeCodeAPIHandler{}
