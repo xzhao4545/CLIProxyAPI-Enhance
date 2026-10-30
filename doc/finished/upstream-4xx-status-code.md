@@ -4,6 +4,8 @@
 
 Added `upstream-4xx-to-502`, a boolean setting that defaults to `false`. When enabled, disclosed upstream HTTP/WebSocket statuses from 400 through 499 are returned to downstream clients as 502. Usage statistics retain the real upstream status.
 
+Release versions: server `0.3.7` (`v0.3.7`) and management panel `0.3.3` (`v0.3.3`).
+
 ## Implementation
 
 - Provider errors expose `UpstreamStatusCode()` separately from the status used for retry and credential handling.
