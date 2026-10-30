@@ -236,6 +236,57 @@ func TestSQLiteStoreCacheHitRateUsesReadTokensOnly(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreNormalizesHistoricalClaudeInput(t *testing.T) {
+	store := openTestStore(t)
+	defer closeTestStore(t, store)
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name, provider                        string
+		input, read, write, total, wantPrompt int64
+	}{
+		{"legacy", "claude", 100, 900, 100, 1110, 1100},
+		{"fully cached", "claude", 0, 900, 0, 910, 900},
+		{"normalized", "claude", 1100, 900, 100, 1110, 1100},
+		{"subset", "codex", 1000, 900, 0, 1010, 1000},
+		{"inconsistent", "claude", 100, 900, 100, 500, 100},
+		{"unknown protocol", "custom", 100, 900, 100, 1110, 100},
+	}
+	for _, tc := range cases {
+		mustInsertEvent(t, store, Event{
+			StartedAt: base.Add(30 * time.Minute), ProviderKey: tc.provider,
+			Model: tc.name, Status: StatusSuccess, PromptTokens: tc.input,
+			CompletionTokens: 10, TotalTokens: tc.total,
+			CacheReadTokens: tc.read, CacheCreationTokens: tc.write,
+		})
+	}
+	if _, err := store.db.Exec("UPDATE usage_meta SET value = '3' WHERE key = 'rollup_version'"); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := store.configure(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range cases {
+			filter := QueryFilter{Model: tc.name, DateFrom: ptrTime(base), DateTo: ptrTime(base.Add(time.Hour))}
+			page, err := store.QueryEvents(filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Events) != 1 || page.Events[0].PromptTokens != tc.wantPrompt {
+				t.Fatalf("attempt %d model %s events = %+v, want prompt %d", attempt, tc.name, page.Events, tc.wantPrompt)
+			}
+			metrics, err := store.QueryMetrics(filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRate := float64(tc.read) / float64(tc.wantPrompt)
+			if metrics.TotalPromptTokens != tc.wantPrompt || metrics.CacheHitRate != wantRate {
+				t.Fatalf("attempt %d model %s rollup prompt=%d rate=%v, want %d/%v", attempt, tc.name, metrics.TotalPromptTokens, metrics.CacheHitRate, tc.wantPrompt, wantRate)
+			}
+		}
+	}
+}
+
 func TestSQLiteStoreNewColumnsRoundTripAndFilter(t *testing.T) {
 	store := openTestStore(t)
 	defer closeTestStore(t, store)

@@ -332,9 +332,10 @@ func buildEvent(ctx context.Context, record coreusage.Record, cfg Config) Event 
 		errorCode = http.StatusText(httpStatus)
 	}
 
-	total := record.Detail.TotalTokens
-	if total == 0 {
-		total = record.Detail.InputTokens + record.Detail.OutputTokens + record.Detail.ReasoningTokens
+	detail := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, "")
+	promptTokens := detail.InputTokens
+	if detail.TokenBreakdown.Quality == coreusage.TokenAccountingQualityComplete {
+		promptTokens = detail.TokenBreakdown.Input.TotalTokens
 	}
 	authType := strings.TrimSpace(record.AuthType)
 	if authType == "" {
@@ -366,9 +367,9 @@ func buildEvent(ctx context.Context, record coreusage.Record, cfg Config) Event 
 		Status:                 status,
 		HTTPStatus:             httpStatus,
 		UpstreamStatus:         failStatus,
-		PromptTokens:           record.Detail.InputTokens,
+		PromptTokens:           promptTokens,
 		CompletionTokens:       record.Detail.OutputTokens,
-		TotalTokens:            total,
+		TotalTokens:            detail.TotalTokens,
 		ReasoningTokens:        record.Detail.ReasoningTokens,
 		ReasoningTokensPresent: record.Detail.ReasoningTokensPresent,
 		ReasoningEffort:        strings.TrimSpace(record.ReasoningEffort),

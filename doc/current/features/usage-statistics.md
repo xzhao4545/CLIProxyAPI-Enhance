@@ -20,13 +20,17 @@ Persistent events include:
 - failure stage, error code, sanitized error message, and optional raw provider error
 - metadata JSON (carries the credential source identity)
 
+For complete canonical token breakdowns, `prompt_tokens` stores total input, including uncached input, cache reads, and cache creation. Claude's upstream `input_tokens` is only uncached input, while OpenAI/Codex/Gemini input totals include cache tokens. The recorder uses `TokenBreakdown.Input.TotalTokens` so cache tokens are counted once for each protocol. Unknown or inconsistent breakdowns retain their reported input; total tokens use the SDK's normalized detail.
+
 ## SQLite Store
 
-The SQLite store creates an append-only `usage_events` table with indexes for filtering and aggregation. Each raw event stores both the original provider fields and the statistics provider identity fields used by aggregate queries. The store enables WAL mode and busy timeout behavior. Usage writes are best effort and should not fail proxied requests.
+The SQLite store creates an append-only `usage_events` table with indexes for filtering and aggregation. Each raw event stores request token statistics, provider fields, and the statistics provider identity fields used by aggregate queries. The store enables WAL mode and busy timeout behavior. Usage writes are best effort and should not fail proxied requests.
 
 The store also maintains an hourly `usage_rollup_hourly` table. Each inserted usage event updates the matching hourly bucket in the same SQLite transaction as the raw event insert. Existing databases backfill statistics provider identity fields on startup, and an empty hourly rollup table is populated from existing raw events. Aggregate queries use a mixed plan when their filters can be represented by rollup dimensions: complete hours are read from `usage_rollup_hourly`, while non-hour-aligned range heads and tails are read from `usage_events` and merged in memory. Queries with unsupported fine-grained filters fall back to `usage_events` to preserve exact results. Recent request lists and failure-detail queries continue to read raw events.
 
 Existing databases that predate cache-read and cache-creation columns keep historical `cache_read_tokens` and `cache_creation_tokens` at `0` because old `cached_tokens` values cannot reliably distinguish cache reads from cache creation. New records persist the split fields, and cache hit rate is calculated only from cache-read tokens.
+
+Rollup version `4` normalizes identifiable historical `claude` and `anthropic` input totals during startup. Records whose total equals prompt plus completion plus nonzero split cache tokens receive the cache tokens in `prompt_tokens`. Records with normalized totals, inconsistent totals, unknown protocols, or missing split cache counts are preserved. The event correction, hourly rebuild, and version marker are committed in one transaction; subsequent startup opens retain the resulting counts.
 
 Relative `usage.sqlite-path` values resolve beside the active config file. The default file name is `usage.sqlite3`.
 
@@ -40,7 +44,7 @@ Metrics include:
 
 - total requests, successes, failures, and success rate
 - prompt, completion, reasoning, cached, and total tokens
-- cache hit rate, calculated as cache-read input tokens divided by prompt tokens; cache-creation tokens are stored but do not count as hits
+- cache hit rate, calculated as cache-read input tokens divided by total prompt tokens, including cache reads and cache creation; cache-creation tokens do not count as hits
 - RPM and TPM over the selected time window
 - provider request, token, and success-rate metrics
 - model request and token metrics

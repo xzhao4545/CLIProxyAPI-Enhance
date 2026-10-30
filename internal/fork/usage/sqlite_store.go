@@ -12,7 +12,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const usageRollupVersion = "3"
+const usageRollupVersion = "4"
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -284,6 +284,16 @@ func (s *SQLiteStore) backfillUsageRollup(ctx context.Context) error {
 	defer func() {
 		_ = tx.Rollback()
 	}()
+	// Claude's raw input excludes cache tokens. The equality identifies records
+	// with that accounting without adding cache tokens to normalized input twice.
+	if _, err := tx.ExecContext(ctx, `
+UPDATE usage_events
+SET prompt_tokens = prompt_tokens + cache_read_tokens + cache_creation_tokens
+WHERE LOWER(TRIM(provider_key)) IN ('claude', 'anthropic')
+	AND cache_read_tokens + cache_creation_tokens > 0
+	AND total_tokens = prompt_tokens + completion_tokens + cache_read_tokens + cache_creation_tokens`); err != nil {
+		return fmt.Errorf("normalize historical Claude input tokens: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM usage_rollup_hourly"); err != nil {
 		return fmt.Errorf("clear usage hourly rollup: %w", err)
 	}
