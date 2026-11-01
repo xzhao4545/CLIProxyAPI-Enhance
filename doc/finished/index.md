@@ -11,3 +11,4 @@ Completed tasks. Implementation details settle into `../current`.
 - [Usage Response Model Recording Fix](usage-response-model-recording.md) — restored response model collection across non-stream, SSE, and WebSocket executor paths.
 - [Codex Terminal Response Model Recording](codex-terminal-response-model.md) — records models from complete Codex HTTP and SSE terminal payloads independently of network chunk boundaries.
 - [Retry Cooldown Threshold Fix](retry-cooldown-threshold.md) — allows recoverable downstream retries to reach upstream before applying cooldown.
+- [Upstream Merge to v8.0.48](upstream-merge-v8.md) — merged upstream v8, repaired the previous merge's dropped changes, and removed the keyword filter feature.

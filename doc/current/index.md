@@ -6,7 +6,7 @@ This directory describes the current implementation state of CLIProxyAPI-Enhance
 
 CLIProxyAPI-Enhance is a Go proxy server exposing OpenAI, Gemini, Claude, Codex, Antigravity, XAI, Amp, and SDK-facing APIs. The server combines provider translation, OAuth and API-key credential management, load-balanced provider selection, usage reporting, management APIs, and a downloadable management panel.
 
-The current server release version is `0.3.7`; the management panel release version is `0.3.3`. Their Git tags are `v0.3.7` and `v0.3.3` in the respective repositories.
+The current server release version is `0.3.7`; the management panel release version is `0.3.3`. Their Git tags are `v0.3.7` and `v0.3.3` in the respective repositories. The server is based on upstream `router-for-me/CLIProxyAPI` `main` at `v8.0.48` (Go module `github.com/router-for-me/CLIProxyAPI/v8`).
 
 Primary runtime surfaces:
 
@@ -23,7 +23,6 @@ Primary runtime surfaces:
 - [Architecture](architecture.md)
 - [Configuration](configuration.md)
 - [Management API](api/management.md)
-- [Keyword Filters](features/keyword-filters.md)
 - [Retry and Cooldown](features/retry-cooldown.md)
 - [Upstream Error Responses](features/upstream-errors.md)
 - [Usage Statistics](features/usage-statistics.md)

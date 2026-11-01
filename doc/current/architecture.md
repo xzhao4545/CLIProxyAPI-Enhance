@@ -11,7 +11,7 @@ Core responsibilities:
 - `internal/thinking/` normalizes reasoning configuration before provider-specific translation.
 - `internal/translator/` translates protocol payloads and responses between source and target provider formats.
 - `internal/runtime/executor/` performs provider-specific upstream calls and streams provider responses.
-- `sdk/cliproxy/auth/conductor.go` selects credentials and fallback models, wraps stream results, records provider outcomes, and marks failures for load-balancing decisions.
+- `sdk/cliproxy/auth/conductor_*.go` select credentials and fallback models, wrap stream results, record provider outcomes, and mark failures for load-balancing decisions.
 
 ## Configuration Lifecycle
 
@@ -24,7 +24,6 @@ Important normalized config areas:
 - OAuth model exclusions and aliases
 - payload defaults, overrides, raw payload values, and filter rules
 - fork-owned persistent usage settings
-- keyword filter rules
 
 ## Fork-Owned Packages
 
@@ -33,15 +32,13 @@ Fork-specific behavior is concentrated under `internal/fork` when possible. This
 Current fork-owned packages:
 
 - `internal/fork/usage/` implements persistent SQLite usage recording and query APIs.
-- `internal/fork/keywordfilter/` implements response content keyword matching for provider failure detection.
-
 
 ## Amp Integration
 
-Fork retains the Amp routing module under `internal/api/modules/amp`. It is registered from `internal/api/server.go`, hot-reloads through `UpdateClients` when `config.AmpCode` changes, and exposes management routes under `/v0/management/ampcode`.
+Fork retains the Amp routing module under `internal/api/modules/amp`. It is registered from `internal/api/server.go` when a management secret is present, hot-reloads through `UpdateClientsContext` (`internal/api/server_reload.go`) when `config.AmpCode` changes, and exposes management routes under `/v0/management/ampcode`.
 
 ## Management Surface
 
-Management endpoints live under `/v0/management` and are enabled only when a management secret is available from config, environment, or local runtime options. All management endpoints pass through management availability and key middleware.
+Management endpoints live under `/v0/management` and are enabled only when a management secret is available from config, environment, or local runtime options. Route registration lives in `internal/api/server_management.go`. All management endpoints pass through management availability and key middleware.
 
 The browser panel is served from `/management.html`, with `/management` redirecting to that page. Root `/` keeps JSON discovery unless the usage management panel root redirect option is enabled and the request looks browser-oriented.

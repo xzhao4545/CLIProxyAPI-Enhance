@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -323,8 +323,8 @@ func buildEvent(ctx context.Context, record coreusage.Record, cfg Config) Event 
 		message = http.StatusText(httpStatus)
 	}
 
-	errorStage := strings.TrimSpace(record.Fail.Stage)
-	if failed && errorStage == "" {
+	errorStage := ""
+	if failed {
 		errorStage = inferErrorStage(record.Fail, httpStatus)
 	}
 	errorCode := strings.TrimSpace(record.Fail.Code)
@@ -392,9 +392,6 @@ func resolveSuccess(ctx context.Context) bool {
 }
 
 func inferErrorStage(failure coreusage.Failure, status int) string {
-	if strings.TrimSpace(failure.Stage) != "" {
-		return strings.TrimSpace(failure.Stage)
-	}
 	if failure.StatusCode > 0 || status >= http.StatusBadRequest {
 		return "upstream_response"
 	}

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,9 +10,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/tidwall/gjson"
 )
 
@@ -30,7 +31,8 @@ func TestImagesStreamReplacesUpstream4xx(t *testing.T) {
 
 func TestResponsesWebsocketReplacesStatusAndKeepsUpstreamError(t *testing.T) {
 	h := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{Upstream4xxTo502: true}, nil)
-	msg := &interfaces.ErrorMessage{StatusCode: 403, Error: videoContentStatusError{error: fmt.Errorf("upstream failure"), status: 403}}
+	// Upstream exposes only request faults on the websocket, so use an exposed 400.
+	msg := &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: videoContentStatusError{error: fmt.Errorf("upstream failure"), status: http.StatusBadRequest}}
 	errs := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{}
@@ -39,20 +41,20 @@ func TestResponsesWebsocketReplacesStatusAndKeepsUpstreamError(t *testing.T) {
 			errs <- errUpgrade
 			return
 		}
-		_, errWrite := writeResponsesWebsocketError(conn, nil, h.DownstreamErrorMessage(msg))
+		writer := newResponsesWebsocketWriter(conn)
+		writer.downstreamError = h.DownstreamErrorMessage
+		_, _, errWrite := writeResponsesWebsocketTerminalError(writer, nil, msg, nil)
+		if errors.Is(errWrite, websocket.ErrCloseSent) {
+			errWrite = nil
+		}
 		errs <- errWrite
-		_ = conn.Close()
 	}))
 	defer server.Close()
 	conn, _, errDial := websocket.DefaultDialer.Dial("ws"+server.URL[len("http"):], nil)
 	if errDial != nil {
 		t.Fatal(errDial)
 	}
-	defer func() {
-		if errClose := conn.Close(); errClose != nil {
-			t.Errorf("close websocket: %v", errClose)
-		}
-	}()
+	defer func() { _ = conn.Close() }()
 	_, failedPayload, errRead := conn.ReadMessage()
 	if errRead != nil {
 		t.Fatal(errRead)
@@ -64,7 +66,11 @@ func TestResponsesWebsocketReplacesStatusAndKeepsUpstreamError(t *testing.T) {
 	if errWrite := <-errs; errWrite != nil {
 		t.Fatal(errWrite)
 	}
-	if gjson.GetBytes(failedPayload, "response.error.code").String() != "internal_server_error" || gjson.GetBytes(payload, "status").Int() != 502 || msg.StatusCode != 403 {
-		t.Fatalf("websocket=%s upstream=%d", payload, msg.StatusCode)
+	if gjson.GetBytes(failedPayload, "type").String() != "response.failed" ||
+		gjson.GetBytes(failedPayload, "response.error.code").String() != "internal_server_error" ||
+		gjson.GetBytes(payload, "type").String() != wsEventTypeError ||
+		gjson.GetBytes(payload, "status").Int() != http.StatusBadGateway ||
+		msg.StatusCode != http.StatusBadRequest {
+		t.Fatalf("failed=%s websocket=%s upstream=%d", failedPayload, payload, msg.StatusCode)
 	}
 }

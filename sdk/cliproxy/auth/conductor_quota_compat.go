@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // ErrModelStateNotFound is returned when ResetQuotaModel cannot find the target model state.
@@ -58,6 +58,8 @@ func (m *Manager) ResetQuotaModel(ctx context.Context, authID, model string) (*A
 	now := time.Now()
 	var snapshot *Auth
 
+	releaseMutation := m.lockAuthMutation(authID)
+	defer releaseMutation()
 	m.mu.Lock()
 	auth, ok := m.auths[authID]
 	if !ok || auth == nil {
@@ -99,18 +101,20 @@ func (m *Manager) ResetQuotaModel(ctx context.Context, authID, model string) (*A
 	if len(auth.ModelStates) > 0 {
 		updateAggregatedAvailability(auth, now)
 	}
-	if !auth.Disabled && auth.Status != StatusDisabled && !hasModelError(auth, now) {
+	if !auth.Disabled && auth.Status != StatusDisabled && !hasModelError(auth, now) && !hasUnauthorizedAuthFailure(auth) {
 		auth.LastError = nil
 		auth.StatusMessage = ""
 		auth.Status = StatusActive
 	}
+	auth.Generation++
 	auth.UpdatedAt = now
-	if errPersist := m.persist(ctx, auth); errPersist != nil {
+	if errPersist := m.persistLocked(ctx, auth); errPersist != nil {
 		m.mu.Unlock()
 		return nil, errPersist
 	}
 	snapshot = auth.Clone()
 	m.mu.Unlock()
+	releaseMutation()
 
 	for _, key := range resumeModels {
 		if strings.TrimSpace(key) == "" {

@@ -84,55 +84,6 @@ Unknown `model` under the auth returns HTTP 404.
 This path reuses the same `ResetQuota` clearing logic (memory, registry resume, scheduler, optional `.cds` persistence). It does not change operator `disabled` flags.
 If a later auth fails mid-loop, the response is HTTP 500 with `"status":"partial"` plus the already-cleared `auth_indexes` / `reset_count`.
 
-## Keyword Filter Routes
-
-Keyword filter management routes are:
-
-```text
-GET    /v0/management/keyword-filters
-PUT    /v0/management/keyword-filters
-PATCH  /v0/management/keyword-filters
-DELETE /v0/management/keyword-filters?index=<n>
-```
-
-`GET` returns:
-
-```json
-{"keyword-filters": []}
-```
-
-`PUT` replaces all rules using:
-
-```json
-{
-  "keyword-filters": [
-    {
-      "keyword": "insufficient credits",
-      "match-mode": "anywhere",
-      "enabled": true,
-      "case-sensitive": false
-    }
-  ]
-}
-```
-
-`PATCH` updates one rule by index:
-
-```json
-{
-  "index": 0,
-  "rule": {
-    "keyword": "blocked",
-    "match-mode": "start",
-    "enabled": true
-  }
-}
-```
-
-`DELETE` removes one rule by index.
-
-All keyword filter writes use the normal config persistence path. `PUT` accepts an empty rule list, and `PATCH` requires both `index` and `rule`. Empty `match-mode` values are stored as `anywhere`.
-
 ## Persistent Usage Routes
 
 When a usage query service is registered, routes are exposed under both `/usage` and `/api/usage` inside the management group:

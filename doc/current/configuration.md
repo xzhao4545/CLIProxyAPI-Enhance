@@ -2,11 +2,15 @@
 
 ## Main Config File
 
-The default config file is `config.yaml`; `config.example.yaml` documents the public shape. `.env` is auto-loaded from the working directory. Authentication material defaults under `auths/` unless `auth-dir` points elsewhere.
+The default config file is `config.yaml`; `config.example.yaml` documents the public shape using the upstream v8 layout (`config-version: 8`). `.env` is auto-loaded from the working directory. Authentication material defaults under `auths/` unless `auth-dir` points elsewhere.
+
+## Config Layout
+
+The loader accepts both the legacy flat layout and the v8 layout. A v8 write moves legacy keys to their v8 paths and comments out unknown root sections. Fork-only roots `usage`, `ampcode`, and `upstream-4xx-to-502` are listed in `forkV8Roots` (`internal/config/config_v8.go`), so they are kept active on v8 writes and do not by themselves mark a file as v8. `quota-exceeded` is a shared root, so `quota-exceeded.transient-failure-cool-down-min-failures` is kept as well.
 
 ## Remote Management
 
-`remote-management` controls management API and browser panel behavior:
+`remote-management` (v8 path `management`) controls management API and browser panel behavior:
 
 ```yaml
 remote-management:
@@ -46,22 +50,6 @@ Relative SQLite paths resolve next to the active config file. `:memory:` and abs
 ## Upstream Error Responses
 
 `upstream-4xx-to-502` is a boolean that defaults to `false`. Enabling it returns upstream model API 4xx errors to downstream clients as 502 while usage statistics record the real upstream status. The setting supports configuration hot reload and the management panel visual/YAML editors. See [Upstream Error Responses](features/upstream-errors.md) for response-path and stream behavior.
-
-## Keyword Filters
-
-`keyword-filters` defines response-content rules used by the auth conductor to classify matching upstream responses as retryable provider failures:
-
-```yaml
-keyword-filters:
-  - keyword: "insufficient credits"
-    match-mode: "anywhere"
-    enabled: true
-    case-sensitive: false
-```
-
-Supported `match-mode` values are `anywhere`, `start`, `end`, and `exact`. Empty match mode defaults to `anywhere` in management API writes and runtime matching.
-
-Rules are evaluated in configured order. Disabled rules and rules with an empty keyword are skipped. Runtime matching snapshots the rule list for each stream attempt so hot reloads apply to new attempts without changing an in-flight attempt.
 
 ## Payload Rules
 
