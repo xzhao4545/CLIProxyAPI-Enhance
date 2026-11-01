@@ -49,7 +49,8 @@ jobs:
 
           git fetch --force --tags
           previous_tag=""
-          if previous_tag_value="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null)"; then
+          # Fork releases use v0.x tags; upstream v7/v8 tags share the history and must not be picked.
+          if previous_tag_value="$(git describe --tags --abbrev=0 --match 'v0.*' "${GITHUB_REF_NAME}^" 2>/dev/null)"; then
             previous_tag="$previous_tag_value"
             changelog_range="${previous_tag}..${GITHUB_REF_NAME}"
           else
