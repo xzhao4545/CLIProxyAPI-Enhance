@@ -12,7 +12,7 @@ import (
 
 const maxValidatedStreamBytes = 64 << 20
 
-func (m *Manager) validatesResponseModel(provider, model string) bool {
+func (m *Manager) validatesResponseModel(provider, model string, auth *Auth) bool {
 	cfg := m.runtimeConfigSnapshot()
 	if cfg == nil {
 		return false
@@ -20,6 +20,9 @@ func (m *Manager) validatesResponseModel(provider, model string) bool {
 	baseModel := strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
 	for _, rule := range cfg.ResponseModelValidation {
 		if !strings.EqualFold(strings.TrimSpace(rule.Provider), strings.TrimSpace(provider)) {
+			continue
+		}
+		if label := strings.TrimSpace(rule.Label); label != "" && (auth == nil || label != strings.TrimSpace(auth.Label)) {
 			continue
 		}
 		for _, configuredModel := range rule.Models {
@@ -61,7 +64,7 @@ func bufferWebsocketObservations(opts cliproxyexecutor.Options) (cliproxyexecuto
 }
 
 func (m *Manager) executeWithResponseModelValidation(ctx context.Context, executor ProviderExecutor, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	if !m.validatesResponseModel(executor.Identifier(), req.Model) {
+	if !m.validatesResponseModel(executor.Identifier(), req.Model, auth) {
 		return executor.Execute(ctx, auth, req, opts)
 	}
 	execCtx, guard := usage.WithResponseModelGuard(ctx, executor.Identifier(), req.Model)
@@ -75,7 +78,7 @@ func (m *Manager) executeWithResponseModelValidation(ctx context.Context, execut
 }
 
 func (m *Manager) executeStreamWithResponseModelValidation(ctx context.Context, executor ProviderExecutor, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	if !m.validatesResponseModel(executor.Identifier(), req.Model) {
+	if !m.validatesResponseModel(executor.Identifier(), req.Model, auth) {
 		return executor.ExecuteStream(ctx, auth, req, opts)
 	}
 	// The internal consumer drains upstream before the HTTP consumer can acknowledge delivery.

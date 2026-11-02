@@ -40,12 +40,29 @@ func TestResponseModelValidationScopeAndReload(t *testing.T) {
 		{"codex", "gpt-5.4", true}, {"CODEX", "gpt-5.4(high)", true},
 		{"claude", "gpt-5.4", false}, {"codex", "gpt-5.4-mini", false},
 	} {
-		if got := m.validatesResponseModel(tc.provider, tc.model); got != tc.want {
+		if got := m.validatesResponseModel(tc.provider, tc.model, nil); got != tc.want {
 			t.Fatalf("scope %s/%s = %v, want %v", tc.provider, tc.model, got, tc.want)
 		}
 	}
+	m.SetConfig(&config.Config{ResponseModelValidation: []config.ResponseModelValidationRule{{Provider: "codex", Label: "upstream-a", Models: []string{"gpt-5.4"}}}})
+	for _, tc := range []struct {
+		provider string
+		auth     *Auth
+		want     bool
+	}{
+		{"codex", &Auth{Label: "upstream-a"}, true},
+		{"codex", &Auth{Label: "upstream-b"}, false},
+		{"codex", &Auth{Label: " upstream-a "}, true},
+		{"codex", &Auth{Label: "Upstream-A"}, false},
+		{"claude", &Auth{Label: "upstream-a"}, false},
+		{"codex", nil, false},
+	} {
+		if got := m.validatesResponseModel(tc.provider, "gpt-5.4", tc.auth); got != tc.want {
+			t.Fatalf("provider label scope %s/%+v = %v, want %v", tc.provider, tc.auth, got, tc.want)
+		}
+	}
 	m.SetConfig(&config.Config{})
-	if m.validatesResponseModel("codex", "gpt-5.4") {
+	if m.validatesResponseModel("codex", "gpt-5.4", &Auth{Label: "upstream-a"}) {
 		t.Fatal("removed validation rule remained active")
 	}
 }

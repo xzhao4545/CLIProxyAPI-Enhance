@@ -4,6 +4,8 @@ Completed tasks. Implementation details settle into `../current`.
 
 ## Completed
 
+- [Response Model Provider Labels](response-model-provider-label.md) — selects specific provider configurations by label for response-model validation.
+
 - [Response Model Validation](response-model-validation.md) — validates selected provider/model pairs, buffers streams before release, and records reported substitutions as failures.
 
 - [Upstream 4xx Status Replacement](upstream-4xx-status-code.md) — added an optional downstream 502 mapping while preserving actual upstream statuses in usage statistics.

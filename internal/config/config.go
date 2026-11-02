@@ -222,6 +222,8 @@ type Config struct {
 
 // ResponseModelValidationRule enables response-model validation for resolved models of one provider.
 type ResponseModelValidationRule struct {
-	Provider string   `yaml:"provider" json:"provider"`
-	Models   []string `yaml:"models" json:"models"`
+	Provider string `yaml:"provider" json:"provider"`
+	// Label optionally restricts the rule to credentials with this configured provider label.
+	Label  string   `yaml:"label,omitempty" json:"label,omitempty"`
+	Models []string `yaml:"models" json:"models"`
 }

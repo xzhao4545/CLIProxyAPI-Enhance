@@ -1279,11 +1279,13 @@ upstream-4xx-to-502: false
 # Validate raw upstream response models for selected provider/model pairs.
 # Uses the existing loose model comparison; responses without a model are allowed.
 # Selected streams are fully buffered before release (maximum 64 MiB).
+# An optional label selects one configured provider; omit it to cover the provider kind.
 response-model-validation: []
 # response-model-validation:
 #   - provider: "codex"
+#     label: "my-codex-upstream" # Must match that provider configuration's label.
 #     models: ["gpt-5.4", "gpt-5.4-mini"]
-#   - provider: "my-openai-compatible-provider"
+#   - provider: "openai-compatible-my-gateway"
 #     models: ["gpt-4o"]
 
 quota-exceeded:

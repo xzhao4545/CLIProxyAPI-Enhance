@@ -347,7 +347,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			a := &coreauth.Auth{
 				ID:         id,
 				Provider:   internalProviderKey,
-				Label:      compat.Name,
+				Label:      firstNonEmpty(compat.Label, compat.Name),
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				ProxyURL:   proxyURL,
@@ -390,7 +390,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			a := &coreauth.Auth{
 				ID:         id,
 				Provider:   internalProviderKey,
-				Label:      compat.Name,
+				Label:      firstNonEmpty(compat.Label, compat.Name),
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				Attributes: attrs,
@@ -458,7 +458,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   providerName,
-			Label:      "vertex-apikey",
+			Label:      firstNonEmpty(compat.Label, "vertex-apikey"),
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,

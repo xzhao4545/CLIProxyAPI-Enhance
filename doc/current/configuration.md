@@ -54,9 +54,10 @@ Relative SQLite paths resolve next to the active config file. `:memory:` and abs
 ## Response Model Validation
 
 `response-model-validation` lists provider and resolved-model pairs that validate
-raw upstream response models using the existing loose matching logic. Missing
-models pass; reported mismatches return 502. Selected streams buffer their complete
-output before release. See [Response Model Validation](features/response-model-validation.md)
+raw upstream response models using the existing loose matching logic. Optional
+`label` restricts a rule to a specific configured provider; omitting it covers that
+provider kind. Missing models pass; reported mismatches return 502. Selected streams
+buffer their complete output before release. See [Response Model Validation](features/response-model-validation.md)
 for configuration examples, matching rules, and buffering limits.
 
 ## Payload Rules
@@ -66,3 +67,6 @@ for configuration examples, matching rules, and buffering limits.
 ## Provider Labels
 
 Built-in key configs and Amp/OpenAI-compatible configs include optional `label` fields for human-readable usage reports. Usage records prefer runtime auth labels and fall back to stable provider keys when no label is available.
+
+OpenAI-compatible and Vertex-compatible provider labels are copied to runtime
+credentials. Response-model validation can select those same labels.

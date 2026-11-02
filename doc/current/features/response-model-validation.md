@@ -7,17 +7,30 @@ configuration layouts and supports hot reload.
 ```yaml
 response-model-validation:
   - provider: codex
+    label: my-codex-upstream
     models: [gpt-5.4, gpt-5.4-mini]
-  - provider: my-openai-compatible-provider
+  - provider: openai-compatible-my-gateway
     models: [gpt-4o]
 ```
 
 `provider` is the executor's provider key: for example `codex`, `claude`,
-`gemini`, or an OpenAI-compatible provider's configured name. Provider labels
-are display names and do not select rules. `models` lists resolved model IDs
-after alias and model-pool selection. Rule selection ignores case, surrounding
-whitespace, and the request's parenthesized thinking suffix. An empty rule
-list disables validation.
+`gemini`, or `openai-compatible-<name>` for an OpenAI-compatible configuration.
+Optional `label`
+restricts the rule to a specific provider configuration's runtime credential
+label. Both provider and label must match; omitting `label` covers all credentials
+of that provider. Credentials sharing the same label share the rule. Labels
+match exactly after trimming whitespace and are case-sensitive.
+
+Configure the desired label on the corresponding API-key/provider entry. It is
+preserved in runtime credentials and the raw provider/auth labels in usage
+records. OpenAI-compatible entries without a label use their configured name;
+Vertex-compatible entries without one use `vertex-apikey`. Display overrides
+in `usage.provider-labels` do not select credentials.
+
+`models` lists resolved model IDs after alias and model-pool selection. Provider
+and model matching ignore case and surrounding whitespace; model matching also
+ignores the request's parenthesized thinking suffix. An empty rule list disables
+validation.
 
 ## Matching and Rejection
 

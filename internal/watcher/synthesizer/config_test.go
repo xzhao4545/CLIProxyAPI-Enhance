@@ -17,6 +17,28 @@ func TestNewConfigSynthesizer(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizerProviderLabels(t *testing.T) {
+	cfg := &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "gateway-a", Label: "upstream-a", BaseURL: "https://a.example", APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "key-a"}}},
+			{Name: "gateway-b", Label: "upstream-b", BaseURL: "https://b.example"},
+		},
+		VertexCompatAPIKey: []config.VertexCompatKey{{Label: "upstream-c", BaseURL: "https://c.example", APIKey: "key-c"}},
+	}
+	auths, errSynthesize := NewConfigSynthesizer().Synthesize(&SynthesisContext{Config: cfg, IDGenerator: NewStableIDGenerator()})
+	if errSynthesize != nil || len(auths) != 3 {
+		t.Fatalf("synthesize provider labels: count=%d err=%v", len(auths), errSynthesize)
+	}
+	for index, label := range []string{"upstream-a", "upstream-b", "upstream-c"} {
+		if auths[index].Label != label {
+			t.Fatalf("runtime provider label = %q, want %q", auths[index].Label, label)
+		}
+	}
+	if auths[0].Attributes["compat_name"] != "gateway-a" || auths[1].Attributes["compat_name"] != "gateway-b" {
+		t.Fatal("provider labels changed OpenAI-compatible routing names")
+	}
+}
+
 func TestConfigSynthesizer_Synthesize_NilContext(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	auths, err := synth.Synthesize(nil)
