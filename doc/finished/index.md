@@ -4,6 +4,8 @@ Completed tasks. Implementation details settle into `../current`.
 
 ## Completed
 
+- [Release v0.3.8](release-v0.3.8.md) — advances the fork server version with management panel v0.3.4.
+
 - [Response Model Validation UI](response-model-validation-ui.md) — adds visual rule editing in the management center's network configuration section.
 
 - [Response Model Provider Labels](response-model-provider-label.md) — selects specific provider configurations by label for response-model validation.
