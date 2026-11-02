@@ -4,6 +4,8 @@ Completed tasks. Implementation details settle into `../current`.
 
 ## Completed
 
+- [Response Model Validation UI](response-model-validation-ui.md) — adds visual rule editing in the management center's network configuration section.
+
 - [Response Model Provider Labels](response-model-provider-label.md) — selects specific provider configurations by label for response-model validation.
 
 - [Response Model Validation](response-model-validation.md) — validates selected provider/model pairs, buffers streams before release, and records reported substitutions as failures.

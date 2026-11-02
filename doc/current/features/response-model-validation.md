@@ -32,6 +32,15 @@ and model matching ignore case and surrounding whitespace; model matching also
 ignores the request's parenthesized thinking suffix. An empty rule list disables
 validation.
 
+## Management UI
+
+The management center exposes these rules in **Configuration → Network → Response
+model validation**. Each rule accepts a provider kind/key, an optional configuration
+`label`, and one resolved upstream model ID per line. The visual editor uses the
+v8 configuration patch API and preserves unknown rule fields and comments. Clearing
+the last rule writes an explicit empty list to disable validation. Incomplete
+edited rules block saving; concurrent edits to the rule list require review.
+
 ## Matching and Rejection
 
 The guard compares the selected model with models explicitly reported by raw
