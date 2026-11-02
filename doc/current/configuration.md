@@ -6,7 +6,7 @@ The default config file is `config.yaml`; `config.example.yaml` documents the pu
 
 ## Config Layout
 
-The loader accepts both the legacy flat layout and the v8 layout. A v8 write moves legacy keys to their v8 paths and comments out unknown root sections. Fork-only roots `usage`, `ampcode`, and `upstream-4xx-to-502` are listed in `forkV8Roots` (`internal/config/config_v8.go`), so they are kept active on v8 writes and do not by themselves mark a file as v8. `quota-exceeded` is a shared root, so `quota-exceeded.transient-failure-cool-down-min-failures` is kept as well.
+The loader accepts both the legacy flat layout and the v8 layout. A v8 write moves legacy keys to their v8 paths and comments out unknown root sections. Fork-only roots `usage`, `ampcode`, `upstream-4xx-to-502`, and `response-model-validation` are listed in `forkV8Roots` (`internal/config/config_v8.go`), so they are kept active on v8 writes and do not by themselves mark a file as v8. `quota-exceeded` is a shared root, so `quota-exceeded.transient-failure-cool-down-min-failures` is kept as well.
 
 ## Remote Management
 
@@ -50,6 +50,14 @@ Relative SQLite paths resolve next to the active config file. `:memory:` and abs
 ## Upstream Error Responses
 
 `upstream-4xx-to-502` is a boolean that defaults to `false`. Enabling it returns upstream model API 4xx errors to downstream clients as 502 while usage statistics record the real upstream status. The setting supports configuration hot reload and the management panel visual/YAML editors. See [Upstream Error Responses](features/upstream-errors.md) for response-path and stream behavior.
+
+## Response Model Validation
+
+`response-model-validation` lists provider and resolved-model pairs that validate
+raw upstream response models using the existing loose matching logic. Missing
+models pass; reported mismatches return 502. Selected streams buffer their complete
+output before release. See [Response Model Validation](features/response-model-validation.md)
+for configuration examples, matching rules, and buffering limits.
 
 ## Payload Rules
 

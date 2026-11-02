@@ -1276,6 +1276,16 @@ plugins:
 # Usage statistics, retries, and credential cooldowns retain the real upstream status.
 upstream-4xx-to-502: false
 
+# Validate raw upstream response models for selected provider/model pairs.
+# Uses the existing loose model comparison; responses without a model are allowed.
+# Selected streams are fully buffered before release (maximum 64 MiB).
+response-model-validation: []
+# response-model-validation:
+#   - provider: "codex"
+#     models: ["gpt-5.4", "gpt-5.4-mini"]
+#   - provider: "my-openai-compatible-provider"
+#     models: ["gpt-4o"]
+
 quota-exceeded:
   # Number of consecutive transient failures required for the same credential+model before
   # it is cooled down. Applies to HTTP 408/500/502/503/504, status-less retryable failures,

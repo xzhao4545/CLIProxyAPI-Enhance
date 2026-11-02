@@ -18,6 +18,9 @@ type Config struct {
 	// Models selects optional catalog sources independently for each catalog.
 	Models ModelCatalogs `yaml:"models" json:"models"`
 
+	// ResponseModelValidation selects provider/model pairs whose upstream response model must match.
+	ResponseModelValidation []ResponseModelValidationRule `yaml:"response-model-validation,omitempty" json:"response-model-validation,omitempty"`
+
 	SDKConfig `yaml:",inline"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
@@ -215,4 +218,10 @@ type Config struct {
 
 	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
 	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
+}
+
+// ResponseModelValidationRule enables response-model validation for resolved models of one provider.
+type ResponseModelValidationRule struct {
+	Provider string   `yaml:"provider" json:"provider"`
+	Models   []string `yaml:"models" json:"models"`
 }

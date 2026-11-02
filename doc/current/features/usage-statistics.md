@@ -88,6 +88,12 @@ body, while Codex HTTP, SSE, and WebSocket executors observe their complete
 response lifecycle payloads explicitly. Codex HTTP and SSE paths inspect only
 `response.created`, `response.completed`, and `response.incomplete` events so
 high-frequency delta events do not add response-model parsing overhead.
-Stream requests retain the first non-empty model until the terminal usage
-record is published. Supported response locations are `model`,
-`response.model`, and Claude's stream-specific `message.model`.
+Stream requests retain the latest non-empty model until a terminal event finalizes
+it. Supported response locations include `model`, `response.model`,
+`message.model`, `modelVersion`, `response.modelVersion`, and `interaction.model`.
+
+For requests selected by `response-model-validation`, usage publication waits
+for raw response-model validation. Reported substitutions produce failed usage
+records with `response_model_mismatch`, status 502, both model identities, and
+the upstream token counts. Responses without a model remain eligible for success.
+See [Response Model Validation](response-model-validation.md).

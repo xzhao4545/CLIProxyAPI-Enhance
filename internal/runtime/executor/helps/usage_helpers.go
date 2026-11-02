@@ -64,7 +64,8 @@ type UsageReporter struct {
 	ttftSet              bool
 	once                 sync.Once
 
-	responseModelMu sync.RWMutex
+	responseModelMu    sync.RWMutex
+	responseModelGuard *usage.ResponseModelGuard
 	// responseModel holds the latest model name reported by the upstream response.
 	responseModel string
 	// responseModelFinal marks that a terminal event already reported the served
@@ -130,25 +131,26 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		traceID = internallogging.GetRequestID(ctx)
 	}
 	reporter := &UsageReporter{
-		requestID:       uuid.NewString(),
-		traceID:         traceID,
-		selectionID:     usage.SelectionIDFromContext(ctx),
-		provider:        provider,
-		baseURL:         baseURL,
-		model:           model,
-		alias:           strings.TrimSpace(alias),
-		requestedAt:     time.Now(),
-		apiKey:          apiKey,
-		accessProvider:  accessProvider,
-		isNativeKey:     isNativeKey,
-		sessionID:       sessionID,
-		parentSessionID: parentSessionID,
-		source:          resolveUsageSource(auth, apiKey),
-		authType:        resolveUsageAuthType(auth),
-		reasoning:       usage.ReasoningEffortFromContext(ctx),
-		serviceTier:     usage.ServiceTierFromContext(ctx),
-		generate:        usage.GenerateFromContext(ctx),
-		stream:          usage.StreamFromContext(ctx),
+		responseModelGuard: usage.ResponseModelGuardFromContext(ctx, model),
+		requestID:          uuid.NewString(),
+		traceID:            traceID,
+		selectionID:        usage.SelectionIDFromContext(ctx),
+		provider:           provider,
+		baseURL:            baseURL,
+		model:              model,
+		alias:              strings.TrimSpace(alias),
+		requestedAt:        time.Now(),
+		apiKey:             apiKey,
+		accessProvider:     accessProvider,
+		isNativeKey:        isNativeKey,
+		sessionID:          sessionID,
+		parentSessionID:    parentSessionID,
+		source:             resolveUsageSource(auth, apiKey),
+		authType:           resolveUsageAuthType(auth),
+		reasoning:          usage.ReasoningEffortFromContext(ctx),
+		serviceTier:        usage.ServiceTierFromContext(ctx),
+		generate:           usage.GenerateFromContext(ctx),
+		stream:             usage.StreamFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -220,7 +222,7 @@ func (r *UsageReporter) accessTokenFingerprint() string {
 // ObserveResponseModel stores the model reported by an upstream response or event and
 // ignores payloads without one; the substitution warning is emitted at publish time.
 func (r *UsageReporter) ObserveResponseModel(payload []byte) {
-	if r == nil || r.responseModelFinal.Load() {
+	if r == nil || (r.responseModelFinal.Load() && r.responseModelGuard == nil) {
 		return
 	}
 	provider := ""
@@ -228,6 +230,12 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
 		provider = r.provider
 	}
 	served, terminal := extractResponseModelEvent(payload, provider)
+	if r.responseModelGuard != nil {
+		r.responseModelGuard.Observe(served, IsModelSubstituted(r.responseModelGuard.Model, served))
+		if r.responseModelFinal.Load() {
+			return
+		}
+	}
 	if served == "" {
 		if terminal {
 			r.responseModelFinal.Store(true)
@@ -244,12 +252,18 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
 
 // SetResponseModel sets the reported model directly if valid and not already marked final.
 func (r *UsageReporter) SetResponseModel(model string) {
-	if r == nil || r.responseModelFinal.Load() {
+	if r == nil || (r.responseModelFinal.Load() && r.responseModelGuard == nil) {
 		return
 	}
 	model = strings.TrimSpace(model)
 	if model == "" || len(model) > maxResponseModelLength {
 		return
+	}
+	if r.responseModelGuard != nil {
+		r.responseModelGuard.Observe(model, IsModelSubstituted(r.responseModelGuard.Model, model))
+		if r.responseModelFinal.Load() {
+			return
+		}
 	}
 	r.responseModelMu.Lock()
 	r.responseModel = model
@@ -279,9 +293,10 @@ func (r *UsageReporter) UpstreamModel() string {
 	return r.upstreamModel
 }
 
-// IsResponseModelFinal reports whether the response model was already finalized by a terminal event.
+// IsResponseModelFinal reports whether model observation can stop. Validation guards
+// keep inspecting later frames even after usage has retained its terminal model.
 func (r *UsageReporter) IsResponseModelFinal() bool {
-	return r != nil && r.responseModelFinal.Load()
+	return r != nil && r.responseModelFinal.Load() && r.responseModelGuard == nil
 }
 
 // warnModelSubstitution warns about a silent upstream model swap, and labels the

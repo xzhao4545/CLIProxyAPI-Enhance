@@ -606,7 +606,7 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
 
 // forkV8Roots are fork-only root sections that keep the same path in both layouts.
 // They must survive v8 writes but do not by themselves indicate a v8 document.
-var forkV8Roots = []string{"usage", "ampcode", "upstream-4xx-to-502"}
+var forkV8Roots = []string{"usage", "ampcode", "upstream-4xx-to-502", "response-model-validation"}
 
 func v8AllowedRoots() map[string]bool {
 	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true}

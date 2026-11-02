@@ -9,6 +9,7 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 // Request-scoped error actions.
@@ -186,6 +187,10 @@ func extractErrorBody(err error) string {
 // If no rule matches, it returns ("", false).
 func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Config) (string, bool) {
 	if err == nil || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
+		return "", false
+	}
+	// Local validation rejection must not be overridden by upstream-error retry rules.
+	if _, mismatch := errors.AsType[*usage.ResponseModelValidationError](err); mismatch {
 		return "", false
 	}
 	rules := extractRequestScopedErrorRules(auth, cfg)

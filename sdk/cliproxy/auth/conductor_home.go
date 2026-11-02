@@ -1445,7 +1445,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			execReq.Model = upstreamModel
 			creditsCtx = syncMetadataSessionToContext(creditsCtx, creditsOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
-			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
+			resp, errExec := m.executeWithResponseModelValidation(creditsCtx, c.executor, c.auth, execReq, creditsOpts)
 			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts, CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 			if errExec != nil {
 				result.Error = resultErrorFromError(errExec)
@@ -1456,6 +1456,9 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 					result.CredentialScope = true
 				}
 				m.MarkResult(creditsCtx, result)
+				if isRequestScopedError(errExec) {
+					return cliproxyexecutor.Response{}, true, errExec
+				}
 				if result.CredentialScope {
 					break
 				}

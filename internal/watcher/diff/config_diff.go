@@ -82,6 +82,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Upstream4xxTo502 != newCfg.Upstream4xxTo502 {
 		changes = append(changes, fmt.Sprintf("upstream-4xx-to-502: %t -> %t", oldCfg.Upstream4xxTo502, newCfg.Upstream4xxTo502))
 	}
+	if !reflect.DeepEqual(oldCfg.ResponseModelValidation, newCfg.ResponseModelValidation) {
+		changes = append(changes, "response-model-validation: rules updated")
+	}
 	if oldCfg.MaxRetryCredentials != newCfg.MaxRetryCredentials {
 		changes = append(changes, fmt.Sprintf("max-retry-credentials: %d -> %d", oldCfg.MaxRetryCredentials, newCfg.MaxRetryCredentials))
 	}
